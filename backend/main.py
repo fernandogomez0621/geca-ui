@@ -22,7 +22,12 @@ import httpx
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://geca:geca_secret@geca_db:5432/geca_brands")
 CVAT_URL = os.getenv("CVAT_URL", "http://cvat_server:8080")
 CVAT_HOST = os.getenv("CVAT_HOST", "10.43.13.204")
+CVAT_USERNAME = os.getenv("CVAT_USERNAME", "agomezr")
+CVAT_PASSWORD = os.getenv("CVAT_PASSWORD", "geca123**")
 SECRET_KEY = os.getenv("SECRET_KEY", "geca-dev-secret-key-change-in-production")
+
+# CVAT auth token cache
+cvat_token: Optional[str] = None
 
 # --- Database Setup ---
 engine = create_engine(DATABASE_URL)
@@ -487,17 +492,42 @@ def delete_subbrand(subbrand_id: int, db: Session = Depends(get_db), user: User 
 
 
 # ==============================================
-#  CVAT INTEGRATION ENDPOINTS
+#  CVAT INTEGRATION
 # ==============================================
+
+async def get_cvat_client() -> httpx.AsyncClient:
+    """Creates an authenticated CVAT API client"""
+    global cvat_token
+
+    headers = {"Host": CVAT_HOST}
+
+    # Login to get token if we don't have one
+    if not cvat_token:
+        async with httpx.AsyncClient(base_url=CVAT_URL, timeout=30, headers=headers) as tmp:
+            resp = await tmp.post("/api/auth/login", json={
+                "username": CVAT_USERNAME,
+                "password": CVAT_PASSWORD,
+            })
+            if resp.status_code == 200:
+                cvat_token = resp.json().get("key")
+
+    if cvat_token:
+        headers["Authorization"] = f"Token {cvat_token}"
+
+    return httpx.AsyncClient(base_url=CVAT_URL, timeout=30, headers=headers)
+
 
 @app.get("/api/cvat/labels/{cvat_label}")
 async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current_user)):
-    """
-    Consulta CVAT para obtener estadísticas de un label
-    """
+    """Consulta CVAT para obtener estadísticas de un label"""
     try:
-        async with httpx.AsyncClient(base_url=CVAT_URL, timeout=30, headers={"Host": CVAT_HOST}) as client:
+        client = await get_cvat_client()
+        async with client:
             resp = await client.get("/api/tasks", params={"page_size": 100})
+            if resp.status_code == 401:
+                global cvat_token
+                cvat_token = None
+                return {"label": cvat_label, "total_images": 0, "status": "cvat_auth_failed", "samples": []}
             if resp.status_code != 200:
                 return {"label": cvat_label, "total_images": 0, "status": "cvat_unreachable", "samples": []}
 
@@ -535,10 +565,9 @@ async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current
                             sample_frames.append({
                                 "task_id": task_id,
                                 "frame": frame_num,
-                                "url": f"{CVAT_URL}/api/tasks/{task_id}/data?type=frame&number={frame_num}&quality=compressed",
+                                "url": f"http://{CVAT_HOST}:8080/api/tasks/{task_id}/data?type=frame&number={frame_num}&quality=compressed",
                             })
 
-            sb = None
             db = SessionLocal()
             sb = db.query(SubBrand).filter(SubBrand.cvat_label == cvat_label).first()
             min_images = sb.min_training_images if sb else 200
@@ -566,10 +595,11 @@ async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current
 async def list_cvat_tasks(user: User = Depends(get_current_user)):
     """Lista las tareas de CVAT"""
     try:
-        async with httpx.AsyncClient(base_url=CVAT_URL, timeout=30, headers={"Host": CVAT_HOST}) as client:
+        client = await get_cvat_client()
+        async with client:
             resp = await client.get("/api/tasks", params={"page_size": 100})
             if resp.status_code != 200:
-                return {"tasks": [], "status": "cvat_unreachable"}
+                return {"tasks": [], "status": f"cvat_error_{resp.status_code}"}
             data = resp.json()
             tasks = []
             for t in data.get("results", []):

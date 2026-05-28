@@ -26,6 +26,8 @@ services:
       DATABASE_URL: postgresql://geca:geca_secret@geca_db:5432/geca_brands
       CVAT_URL: http://cvat_server:8080
       CVAT_HOST: "10.43.13.204"
+      CVAT_USERNAME: "agomezr"
+      CVAT_PASSWORD: "geca123**"
       SECRET_KEY: geca-production-secret-change-this
     ports:
       - "8000:8000"
