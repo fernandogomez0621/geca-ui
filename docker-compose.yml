@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  geca_db:
+    image: postgres:16-alpine
+    container_name: geca_db
+    environment:
+      POSTGRES_DB: geca_brands
+      POSTGRES_USER: geca
+      POSTGRES_PASSWORD: geca_secret
+    ports:
+      - "5433:5432"
+    volumes:
+      - geca_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geca -d geca_brands"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  geca_backend:
+    build: ./backend
+    container_name: geca_backend
+    environment:
+      DATABASE_URL: postgresql://geca:geca_secret@geca_db:5432/geca_brands
+      CVAT_URL: http://cvat_server:8080
+      SECRET_KEY: geca-production-secret-change-this
+    ports:
+      - "8000:8000"
+    depends_on:
+      geca_db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  geca_frontend:
+    build: ./frontend
+    container_name: geca_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - geca_backend
+    restart: unless-stopped
+
+volumes:
+  geca_db_data:
+
+networks:
+  default:
+    name: cvat_cvat
+    external: true
