@@ -6,21 +6,22 @@ Integración con CVAT para consulta de datasets.
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
 import secrets
 import os
 import httpx
 
 # --- Config ---
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://geca:geca_secret@geca_db:5433/geca_brands")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://geca:geca_secret@geca_db:5432/geca_brands")
 CVAT_URL = os.getenv("CVAT_URL", "http://cvat_server:8080")
+CVAT_HOST = os.getenv("CVAT_HOST", "10.43.13.204")
 SECRET_KEY = os.getenv("SECRET_KEY", "geca-dev-secret-key-change-in-production")
 
 # --- Database Setup ---
@@ -39,31 +40,29 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, index=True)
     email = Column(String(100), unique=True, nullable=False)
     password_hash = Column(String(128), nullable=False)
-    role = Column(String(20), default="annotator")  # admin, annotator, viewer
+    role = Column(String(20), default="annotator")
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Context(Base):
-    """Tipos de superficie donde aparece una marca"""
     __tablename__ = "contexts"
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(50), unique=True, nullable=False)  # camiseta, valla, anillo, grada
+    name = Column(String(50), unique=True, nullable=False)
     description = Column(Text, nullable=True)
-    icon = Column(String(10), nullable=True)  # emoji
+    icon = Column(String(10), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     subbrands = relationship("SubBrand", back_populates="context")
 
 
 class Brand(Base):
-    """Marca principal (Coca-Cola, Nike, etc.)"""
     __tablename__ = "brands"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False)
     display_name = Column(String(100), nullable=False)
     logo_url = Column(Text, nullable=True)
-    color = Column(String(7), default="#6c5ce7")  # hex color for UI
+    color = Column(String(7), default="#6c5ce7")
     client = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -72,12 +71,11 @@ class Brand(Base):
 
 
 class SubBrand(Base):
-    """Variante visual de una marca en un contexto específico"""
     __tablename__ = "subbrands"
     id = Column(Integer, primary_key=True, index=True)
     brand_id = Column(Integer, ForeignKey("brands.id"), nullable=False)
     context_id = Column(Integer, ForeignKey("contexts.id"), nullable=False)
-    cvat_label = Column(String(100), unique=True, nullable=False)  # cocacola_camiseta
+    cvat_label = Column(String(100), unique=True, nullable=False)
     description = Column(Text, nullable=True)
     min_training_images = Column(Integer, default=200)
     is_active = Column(Boolean, default=True)
@@ -91,7 +89,6 @@ class SubBrand(Base):
 #  PYDANTIC SCHEMAS
 # ==============================================
 
-# --- Auth ---
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -117,7 +114,6 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-# --- Context ---
 class ContextCreate(BaseModel):
     name: str
     description: Optional[str] = None
@@ -132,7 +128,6 @@ class ContextOut(BaseModel):
     class Config:
         from_attributes = True
 
-# --- Brand ---
 class BrandCreate(BaseModel):
     name: str
     display_name: str
@@ -160,7 +155,6 @@ class BrandOut(BaseModel):
     class Config:
         from_attributes = True
 
-# --- SubBrand ---
 class SubBrandCreate(BaseModel):
     brand_id: int
     context_id: int
@@ -202,7 +196,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Simple token store (in production use JWT)
 active_tokens: dict[str, int] = {}
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
@@ -247,7 +240,6 @@ def startup():
     Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()
-    # Create default admin if not exists
     if not db.query(User).filter(User.username == "admin").first():
         admin = User(
             username="admin",
@@ -257,7 +249,6 @@ def startup():
         )
         db.add(admin)
 
-    # Create default contexts if empty
     if db.query(Context).count() == 0:
         defaults = [
             Context(name="camiseta", description="Logo en camiseta de jugador", icon="👕"),
@@ -502,13 +493,10 @@ def delete_subbrand(subbrand_id: int, db: Session = Depends(get_db), user: User 
 @app.get("/api/cvat/labels/{cvat_label}")
 async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current_user)):
     """
-    Consulta CVAT para obtener estadísticas de un label:
-    - Cuántas imágenes tienen ese label anotado
-    - Muestra de frames
+    Consulta CVAT para obtener estadísticas de un label
     """
     try:
-        async with httpx.AsyncClient(base_url=CVAT_URL, timeout=30) as client:
-            # Get all tasks
+        async with httpx.AsyncClient(base_url=CVAT_URL, timeout=30, headers={"Host": CVAT_HOST}) as client:
             resp = await client.get("/api/tasks", params={"page_size": 100})
             if resp.status_code != 200:
                 return {"label": cvat_label, "total_images": 0, "status": "cvat_unreachable", "samples": []}
@@ -519,12 +507,10 @@ async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current
 
             for task in tasks:
                 task_id = task["id"]
-                # Check if task has this label
                 task_labels = [l["name"] for l in task.get("labels", [])]
                 if cvat_label not in task_labels:
                     continue
 
-                # Get annotations for this task
                 jobs_resp = await client.get(f"/api/tasks/{task_id}/jobs", params={"page_size": 100})
                 if jobs_resp.status_code != 200:
                     continue
@@ -537,16 +523,13 @@ async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current
                         continue
 
                     annotations = ann_resp.json()
-                    # Count frames with this label
                     frames_with_label = set()
                     for shape in annotations.get("shapes", []):
                         if shape.get("label_id"):
-                            # Match by label name from task labels
                             frames_with_label.add(shape.get("frame", 0))
 
                     total_images += len(frames_with_label)
 
-                    # Get sample frame URLs (first 4)
                     if len(sample_frames) < 4:
                         for frame_num in list(frames_with_label)[:4 - len(sample_frames)]:
                             sample_frames.append({
@@ -555,7 +538,6 @@ async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current
                                 "url": f"{CVAT_URL}/api/tasks/{task_id}/data?type=frame&number={frame_num}&quality=compressed",
                             })
 
-            # Determine training readiness
             sb = None
             db = SessionLocal()
             sb = db.query(SubBrand).filter(SubBrand.cvat_label == cvat_label).first()
@@ -584,7 +566,7 @@ async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current
 async def list_cvat_tasks(user: User = Depends(get_current_user)):
     """Lista las tareas de CVAT"""
     try:
-        async with httpx.AsyncClient(base_url=CVAT_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=CVAT_URL, timeout=30, headers={"Host": CVAT_HOST}) as client:
             resp = await client.get("/api/tasks", params={"page_size": 100})
             if resp.status_code != 200:
                 return {"tasks": [], "status": "cvat_unreachable"}
