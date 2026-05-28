@@ -2,9 +2,10 @@
 GECA Brands Manager - Backend API
 Gestión de marcas, submarcas y contextos para detección en video deportivo.
 Integración con CVAT para consulta de datasets.
+Credenciales CVAT configurables desde la app.
 """
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Boolean, Text
@@ -20,10 +21,6 @@ import httpx
 
 # --- Config ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://geca:geca_secret@geca_db:5432/geca_brands")
-CVAT_URL = os.getenv("CVAT_URL", "http://cvat_server:8080")
-CVAT_HOST = os.getenv("CVAT_HOST", "10.43.13.204")
-CVAT_USERNAME = os.getenv("CVAT_USERNAME", "agomezr")
-CVAT_PASSWORD = os.getenv("CVAT_PASSWORD", "geca123**")
 SECRET_KEY = os.getenv("SECRET_KEY", "geca-dev-secret-key-change-in-production")
 
 # CVAT auth token cache
@@ -36,7 +33,7 @@ Base = declarative_base()
 
 
 # ==============================================
-#  MODELS (SQLAlchemy)
+#  MODELS
 # ==============================================
 
 class User(Base):
@@ -57,7 +54,6 @@ class Context(Base):
     description = Column(Text, nullable=True)
     icon = Column(String(10), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-
     subbrands = relationship("SubBrand", back_populates="context")
 
 
@@ -71,7 +67,6 @@ class Brand(Base):
     client = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-
     subbrands = relationship("SubBrand", back_populates="brand", cascade="all, delete-orphan")
 
 
@@ -85,9 +80,17 @@ class SubBrand(Base):
     min_training_images = Column(Integer, default=200)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-
     brand = relationship("Brand", back_populates="subbrands")
     context = relationship("Context", back_populates="subbrands")
+
+
+class AppSetting(Base):
+    """Configuraciones de la app (CVAT credentials, etc.)"""
+    __tablename__ = "app_settings"
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), unique=True, nullable=False)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ==============================================
@@ -172,19 +175,11 @@ class SubBrandUpdate(BaseModel):
     min_training_images: Optional[int] = None
     is_active: Optional[bool] = None
 
-class SubBrandOut(BaseModel):
-    id: int
-    brand_id: int
-    context_id: int
-    cvat_label: str
-    description: Optional[str]
-    min_training_images: int
-    is_active: bool
-    created_at: datetime
-    brand: Optional[BrandOut] = None
-    context: Optional[ContextOut] = None
-    class Config:
-        from_attributes = True
+class CvatConfigIn(BaseModel):
+    cvat_url: str
+    cvat_host: str
+    cvat_username: str
+    cvat_password: str
 
 
 # ==============================================
@@ -216,10 +211,8 @@ def get_db():
     finally:
         db.close()
 
-
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
-
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     if not token or token not in active_tokens:
@@ -229,11 +222,30 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status_code=401, detail="Usuario no encontrado")
     return user
 
-
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Se requiere rol admin")
     return user
+
+def get_setting(db: Session, key: str) -> Optional[str]:
+    s = db.query(AppSetting).filter(AppSetting.key == key).first()
+    return s.value if s else None
+
+def set_setting(db: Session, key: str, value: str):
+    s = db.query(AppSetting).filter(AppSetting.key == key).first()
+    if s:
+        s.value = value
+        s.updated_at = datetime.utcnow()
+    else:
+        db.add(AppSetting(key=key, value=value))
+
+def get_cvat_config(db: Session) -> dict:
+    return {
+        "cvat_url": get_setting(db, "cvat_url") or "",
+        "cvat_host": get_setting(db, "cvat_host") or "",
+        "cvat_username": get_setting(db, "cvat_username") or "",
+        "cvat_password": get_setting(db, "cvat_password") or "",
+    }
 
 
 # ==============================================
@@ -246,24 +258,22 @@ def startup():
 
     db = SessionLocal()
     if not db.query(User).filter(User.username == "admin").first():
-        admin = User(
+        db.add(User(
             username="admin",
             email="admin@geca.com",
             password_hash=hash_password("admin123"),
             role="admin",
-        )
-        db.add(admin)
+        ))
 
     if db.query(Context).count() == 0:
-        defaults = [
+        db.add_all([
             Context(name="camiseta", description="Logo en camiseta de jugador", icon="👕"),
             Context(name="valla", description="Valla publicitaria lateral", icon="🏗️"),
             Context(name="anillo", description="Anillo LED perimetral del estadio", icon="💡"),
             Context(name="grada", description="Publicidad en gradas/asientos", icon="🏟️"),
             Context(name="cesped", description="Logo pintado en el césped", icon="🌱"),
             Context(name="pantalla", description="Pantalla gigante del estadio", icon="📺"),
-        ]
-        db.add_all(defaults)
+        ])
 
     db.commit()
     db.close()
@@ -280,23 +290,15 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     if not user.is_active:
         raise HTTPException(status_code=401, detail="Usuario desactivado")
-
     token = secrets.token_hex(32)
     active_tokens[token] = user.id
-
-    return Token(
-        access_token=token,
-        token_type="bearer",
-        user=UserOut.model_validate(user),
-    )
-
+    return Token(access_token=token, token_type="bearer", user=UserOut.model_validate(user))
 
 @app.post("/api/auth/logout")
 def logout(token: str = Depends(oauth2_scheme)):
     if token in active_tokens:
         del active_tokens[token]
     return {"status": "ok"}
-
 
 @app.get("/api/auth/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
@@ -311,20 +313,13 @@ def me(user: User = Depends(get_current_user)):
 def list_users(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     return db.query(User).all()
 
-
 @app.post("/api/users", response_model=UserOut)
 def create_user(data: UserCreate, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     if db.query(User).filter(User.username == data.username).first():
         raise HTTPException(400, "Username ya existe")
     if db.query(User).filter(User.email == data.email).first():
         raise HTTPException(400, "Email ya existe")
-
-    user = User(
-        username=data.username,
-        email=data.email,
-        password_hash=hash_password(data.password),
-        role=data.role,
-    )
+    user = User(username=data.username, email=data.email, password_hash=hash_password(data.password), role=data.role)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -339,7 +334,6 @@ def create_user(data: UserCreate, db: Session = Depends(get_db), admin: User = D
 def list_contexts(db: Session = Depends(get_db)):
     return db.query(Context).all()
 
-
 @app.post("/api/contexts", response_model=ContextOut)
 def create_context(data: ContextCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     if db.query(Context).filter(Context.name == data.name).first():
@@ -349,7 +343,6 @@ def create_context(data: ContextCreate, db: Session = Depends(get_db), user: Use
     db.commit()
     db.refresh(ctx)
     return ctx
-
 
 @app.delete("/api/contexts/{context_id}")
 def delete_context(context_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
@@ -370,41 +363,19 @@ def list_brands(db: Session = Depends(get_db)):
     brands = db.query(Brand).all()
     result = []
     for b in brands:
-        brand_data = BrandOut.model_validate(b)
-        brand_data.subbrands = [
-            {
-                "id": sb.id,
-                "cvat_label": sb.cvat_label,
-                "context": sb.context.name if sb.context else None,
-                "context_icon": sb.context.icon if sb.context else None,
-                "is_active": sb.is_active,
-            }
-            for sb in b.subbrands
-        ]
-        result.append(brand_data)
+        bd = BrandOut.model_validate(b)
+        bd.subbrands = [{"id": sb.id, "cvat_label": sb.cvat_label, "context": sb.context.name if sb.context else None, "context_icon": sb.context.icon if sb.context else None, "is_active": sb.is_active} for sb in b.subbrands]
+        result.append(bd)
     return result
-
 
 @app.get("/api/brands/{brand_id}", response_model=BrandOut)
 def get_brand(brand_id: int, db: Session = Depends(get_db)):
     brand = db.query(Brand).filter(Brand.id == brand_id).first()
     if not brand:
         raise HTTPException(404, "Marca no encontrada")
-    brand_data = BrandOut.model_validate(brand)
-    brand_data.subbrands = [
-        {
-            "id": sb.id,
-            "cvat_label": sb.cvat_label,
-            "context": sb.context.name if sb.context else None,
-            "context_icon": sb.context.icon if sb.context else None,
-            "description": sb.description,
-            "min_training_images": sb.min_training_images,
-            "is_active": sb.is_active,
-        }
-        for sb in brand.subbrands
-    ]
-    return brand_data
-
+    bd = BrandOut.model_validate(brand)
+    bd.subbrands = [{"id": sb.id, "cvat_label": sb.cvat_label, "context": sb.context.name if sb.context else None, "context_icon": sb.context.icon if sb.context else None, "description": sb.description, "min_training_images": sb.min_training_images, "is_active": sb.is_active} for sb in brand.subbrands]
+    return bd
 
 @app.post("/api/brands", response_model=BrandOut)
 def create_brand(data: BrandCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -414,10 +385,9 @@ def create_brand(data: BrandCreate, db: Session = Depends(get_db), user: User = 
     db.add(brand)
     db.commit()
     db.refresh(brand)
-    brand_data = BrandOut.model_validate(brand)
-    brand_data.subbrands = []
-    return brand_data
-
+    bd = BrandOut.model_validate(brand)
+    bd.subbrands = []
+    return bd
 
 @app.put("/api/brands/{brand_id}", response_model=BrandOut)
 def update_brand(brand_id: int, data: BrandUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -429,7 +399,6 @@ def update_brand(brand_id: int, data: BrandUpdate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(brand)
     return get_brand(brand_id, db)
-
 
 @app.delete("/api/brands/{brand_id}")
 def delete_brand(brand_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
@@ -445,15 +414,22 @@ def delete_brand(brand_id: int, db: Session = Depends(get_db), admin: User = Dep
 #  SUBBRAND ENDPOINTS
 # ==============================================
 
-@app.get("/api/subbrands", response_model=list[SubBrandOut])
+@app.get("/api/subbrands")
 def list_subbrands(brand_id: Optional[int] = None, db: Session = Depends(get_db)):
     query = db.query(SubBrand)
     if brand_id:
         query = query.filter(SubBrand.brand_id == brand_id)
-    return query.all()
+    return [{
+        "id": sb.id, "brand_id": sb.brand_id, "context_id": sb.context_id,
+        "cvat_label": sb.cvat_label, "description": sb.description,
+        "min_training_images": sb.min_training_images, "is_active": sb.is_active,
+        "created_at": sb.created_at.isoformat() if sb.created_at else None,
+        "brand_name": sb.brand.display_name if sb.brand else None,
+        "context_name": sb.context.name if sb.context else None,
+        "context_icon": sb.context.icon if sb.context else None,
+    } for sb in query.all()]
 
-
-@app.post("/api/subbrands", response_model=SubBrandOut)
+@app.post("/api/subbrands")
 def create_subbrand(data: SubBrandCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     if not db.query(Brand).filter(Brand.id == data.brand_id).first():
         raise HTTPException(400, "Marca no existe")
@@ -461,25 +437,11 @@ def create_subbrand(data: SubBrandCreate, db: Session = Depends(get_db), user: U
         raise HTTPException(400, "Contexto no existe")
     if db.query(SubBrand).filter(SubBrand.cvat_label == data.cvat_label).first():
         raise HTTPException(400, f"Label '{data.cvat_label}' ya existe")
-
     sb = SubBrand(**data.model_dump())
     db.add(sb)
     db.commit()
     db.refresh(sb)
-    return sb
-
-
-@app.put("/api/subbrands/{subbrand_id}", response_model=SubBrandOut)
-def update_subbrand(subbrand_id: int, data: SubBrandUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    sb = db.query(SubBrand).filter(SubBrand.id == subbrand_id).first()
-    if not sb:
-        raise HTTPException(404, "Submarca no encontrada")
-    for key, value in data.model_dump(exclude_unset=True).items():
-        setattr(sb, key, value)
-    db.commit()
-    db.refresh(sb)
-    return sb
-
+    return {"id": sb.id, "cvat_label": sb.cvat_label, "status": "created"}
 
 @app.delete("/api/subbrands/{subbrand_id}")
 def delete_subbrand(subbrand_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -492,81 +454,109 @@ def delete_subbrand(subbrand_id: int, db: Session = Depends(get_db), user: User 
 
 
 # ==============================================
+#  CVAT SETTINGS ENDPOINTS
+# ==============================================
+
+@app.get("/api/settings/cvat")
+def get_cvat_settings(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    cfg = get_cvat_config(db)
+    # Don't send password to frontend, just indicate if it's set
+    return {
+        "cvat_url": cfg["cvat_url"],
+        "cvat_host": cfg["cvat_host"],
+        "cvat_username": cfg["cvat_username"],
+        "has_password": bool(cfg["cvat_password"]),
+        "configured": bool(cfg["cvat_url"] and cfg["cvat_username"] and cfg["cvat_password"]),
+    }
+
+@app.post("/api/settings/cvat")
+def save_cvat_settings(data: CvatConfigIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    global cvat_token
+    cvat_token = None  # Reset cached token
+
+    set_setting(db, "cvat_url", data.cvat_url)
+    set_setting(db, "cvat_host", data.cvat_host)
+    set_setting(db, "cvat_username", data.cvat_username)
+    set_setting(db, "cvat_password", data.cvat_password)
+    db.commit()
+    return {"status": "saved"}
+
+@app.post("/api/settings/cvat/test")
+async def test_cvat_connection(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    cfg = get_cvat_config(db)
+    if not cfg["cvat_url"] or not cfg["cvat_username"]:
+        return {"connected": False, "error": "CVAT no configurado"}
+    try:
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=10, headers={"Host": cfg["cvat_host"]}) as client:
+            resp = await client.post("/api/auth/login", json={
+                "username": cfg["cvat_username"],
+                "password": cfg["cvat_password"],
+            })
+            if resp.status_code == 200:
+                return {"connected": True, "message": "Conexión exitosa"}
+            return {"connected": False, "error": f"Error de autenticación ({resp.status_code})"}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+
+# ==============================================
 #  CVAT INTEGRATION
 # ==============================================
 
-async def get_cvat_client() -> httpx.AsyncClient:
-    """Creates an authenticated CVAT API client"""
+async def get_cvat_client() -> Optional[httpx.AsyncClient]:
+    """Creates an authenticated CVAT API client using DB settings"""
     global cvat_token
 
-    headers = {"Host": CVAT_HOST}
+    db = SessionLocal()
+    cfg = get_cvat_config(db)
+    db.close()
 
-    # Login to get token if we don't have one
+    if not cfg["cvat_url"] or not cfg["cvat_username"]:
+        return None
+
+    headers = {"Host": cfg["cvat_host"]} if cfg["cvat_host"] else {}
+
     if not cvat_token:
-        async with httpx.AsyncClient(base_url=CVAT_URL, timeout=30, headers=headers) as tmp:
-            resp = await tmp.post("/api/auth/login", json={
-                "username": CVAT_USERNAME,
-                "password": CVAT_PASSWORD,
-            })
-            if resp.status_code == 200:
-                cvat_token = resp.json().get("key")
+        try:
+            async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=15, headers=headers) as tmp:
+                resp = await tmp.post("/api/auth/login", json={
+                    "username": cfg["cvat_username"],
+                    "password": cfg["cvat_password"],
+                })
+                if resp.status_code == 200:
+                    cvat_token = resp.json().get("key")
+        except Exception:
+            return None
 
     if cvat_token:
         headers["Authorization"] = f"Token {cvat_token}"
 
-    return httpx.AsyncClient(base_url=CVAT_URL, timeout=30, headers=headers)
+    return httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=headers)
 
 
 @app.get("/api/cvat/labels/{cvat_label}")
 async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current_user)):
-    """Consulta CVAT para obtener estadísticas de un label"""
+    client = await get_cvat_client()
+    if not client:
+        return {"label": cvat_label, "total_images": 0, "status": "not_configured", "samples": []}
     try:
-        client = await get_cvat_client()
         async with client:
-            resp = await client.get("/api/tasks", params={"page_size": 100})
-            if resp.status_code == 401:
-                global cvat_token
-                cvat_token = None
-                return {"label": cvat_label, "total_images": 0, "status": "cvat_auth_failed", "samples": []}
-            if resp.status_code != 200:
-                return {"label": cvat_label, "total_images": 0, "status": "cvat_unreachable", "samples": []}
+            # Get labels to find which tasks have this label
+            labels_resp = await client.get("/api/labels", params={"page_size": 500})
+            if labels_resp.status_code != 200:
+                return {"label": cvat_label, "total_images": 0, "status": "cvat_error", "samples": []}
 
-            tasks = resp.json().get("results", [])
+            matching_tasks = []
+            for l in labels_resp.json().get("results", []):
+                if l["name"] == cvat_label and l.get("task_id"):
+                    matching_tasks.append(l["task_id"])
+
             total_images = 0
-            sample_frames = []
-
-            for task in tasks:
-                task_id = task["id"]
-                task_labels = [l["name"] for l in task.get("labels", [])]
-                if cvat_label not in task_labels:
-                    continue
-
-                jobs_resp = await client.get(f"/api/tasks/{task_id}/jobs", params={"page_size": 100})
-                if jobs_resp.status_code != 200:
-                    continue
-
-                jobs = jobs_resp.json().get("results", [])
-                for job in jobs:
-                    job_id = job["id"]
-                    ann_resp = await client.get(f"/api/jobs/{job_id}/annotations")
-                    if ann_resp.status_code != 200:
-                        continue
-
-                    annotations = ann_resp.json()
-                    frames_with_label = set()
-                    for shape in annotations.get("shapes", []):
-                        if shape.get("label_id"):
-                            frames_with_label.add(shape.get("frame", 0))
-
-                    total_images += len(frames_with_label)
-
-                    if len(sample_frames) < 4:
-                        for frame_num in list(frames_with_label)[:4 - len(sample_frames)]:
-                            sample_frames.append({
-                                "task_id": task_id,
-                                "frame": frame_num,
-                                "url": f"http://{CVAT_HOST}:8080/api/tasks/{task_id}/data?type=frame&number={frame_num}&quality=compressed",
-                            })
+            for task_id in matching_tasks:
+                # Get task size (number of frames/images)
+                task_resp = await client.get(f"/api/tasks/{task_id}")
+                if task_resp.status_code == 200:
+                    total_images += task_resp.json().get("size", 0)
 
             db = SessionLocal()
             sb = db.query(SubBrand).filter(SubBrand.cvat_label == cvat_label).first()
@@ -579,69 +569,53 @@ async def get_cvat_label_stats(cvat_label: str, user: User = Depends(get_current
                 "min_required": min_images,
                 "ready_to_train": total_images >= min_images,
                 "progress_pct": min(100, round(total_images / min_images * 100)) if min_images > 0 else 0,
-                "samples": sample_frames,
             }
-
     except Exception as e:
-        return {
-            "label": cvat_label,
-            "total_images": 0,
-            "status": f"error: {str(e)}",
-            "samples": [],
-        }
+        return {"label": cvat_label, "total_images": 0, "status": f"error: {str(e)}", "samples": []}
 
 
 @app.get("/api/cvat/tasks")
 async def list_cvat_tasks(user: User = Depends(get_current_user)):
-    """Lista las tareas de CVAT"""
+    client = await get_cvat_client()
+    if not client:
+        return {"tasks": [], "status": "not_configured"}
     try:
-        client = await get_cvat_client()
         async with client:
             resp = await client.get("/api/tasks", params={"page_size": 100})
             if resp.status_code != 200:
                 return {"tasks": [], "status": f"cvat_error_{resp.status_code}"}
-            data = resp.json()
-            tasks = []
-            for t in data.get("results", []):
-                tasks.append({
-                    "id": t["id"],
-                    "name": t["name"],
-                    "status": t.get("status", "unknown"),
-                    "size": t.get("size", 0),
-                    "labels": [l["name"] for l in t.get("labels", [])],
-                    "created_date": t.get("created_date"),
-                })
-            return {"tasks": tasks}
+
+            labels_resp = await client.get("/api/labels", params={"page_size": 500})
+            labels_by_task = {}
+            if labels_resp.status_code == 200:
+                for l in labels_resp.json().get("results", []):
+                    tid = l.get("task_id")
+                    if tid:
+                        labels_by_task.setdefault(tid, []).append(l["name"])
+
+            return {"tasks": [{
+                "id": t["id"],
+                "name": t["name"],
+                "status": t.get("status", "unknown"),
+                "size": t.get("size", 0),
+                "labels": labels_by_task.get(t["id"], []),
+                "created_date": t.get("created_date"),
+            } for t in resp.json().get("results", [])]}
     except Exception as e:
         return {"tasks": [], "status": f"error: {str(e)}"}
 
 
 # ==============================================
-#  BRAND MAP ENDPOINT (for detection pipeline)
+#  BRAND MAP & STATS
 # ==============================================
 
 @app.get("/api/brand-map")
 def get_brand_map(db: Session = Depends(get_db)):
-    """
-    Retorna el diccionario de mapeo submarca -> marca
-    Para usar en el pipeline de detección
-    """
     subbrands = db.query(SubBrand).filter(SubBrand.is_active == True).all()
-    brand_map = {}
-    for sb in subbrands:
-        brand_map[sb.cvat_label] = {
-            "brand": sb.brand.display_name,
-            "brand_id": sb.brand.id,
-            "context": sb.context.name,
-            "context_id": sb.context.id,
-            "color": sb.brand.color,
-        }
-    return {"brand_map": brand_map}
-
-
-# ==============================================
-#  STATS ENDPOINT
-# ==============================================
+    return {"brand_map": {
+        sb.cvat_label: {"brand": sb.brand.display_name, "brand_id": sb.brand.id, "context": sb.context.name, "context_id": sb.context.id, "color": sb.brand.color}
+        for sb in subbrands
+    }}
 
 @app.get("/api/stats")
 def get_stats(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
