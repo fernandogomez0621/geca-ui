@@ -253,6 +253,11 @@ function UsersPage() {
 function VideosPage() {
   const [videos, setVideos] = useState([]); const [loading, setLoading] = useState(true);
   const [totalSize, setTotalSize] = useState('');
+  const [extracting, setExtracting] = useState(null); const [interval, setInterval_] = useState(10);
+  const [extractStatus, setExtractStatus] = useState(null);
+  const [viewingFrames, setViewingFrames] = useState(null);
+  const [frames, setFrames] = useState([]); const [framesPage, setFramesPage] = useState(1);
+  const [framesTotalPages, setFramesTotalPages] = useState(0); const [framesTotal, setFramesTotal] = useState(0);
 
   const load = () => {
     setLoading(true);
@@ -268,15 +273,76 @@ function VideosPage() {
   };
   useEffect(load, []);
 
+  const estimateFrames = (v) => {
+    if (!v.duration_secs || v.duration_secs <= 0) return '?';
+    return Math.floor(v.duration_secs / interval) + 1;
+  };
+
+  const startExtraction = async (v) => {
+    setExtractStatus({ status: 'starting' });
+    const res = await api(`/api/videos/${encodeURIComponent(v.name)}/extract`, {
+      method: 'POST', body: JSON.stringify({ interval: interval })
+    });
+    if (res?.status === 'started' || res?.status === 'already_running') {
+      pollStatus(v.name);
+    }
+  };
+
+  const pollStatus = (filename) => {
+    const poll = setIntervalFunc(() => {
+      api(`/api/videos/${encodeURIComponent(filename)}/extract/status`).then(s => {
+        setExtractStatus(s);
+        if (s?.status === 'done' || s?.status === 'error') {
+          clearInterval(poll);
+          load();
+        }
+      });
+    }, 2000);
+  };
+
+  const setIntervalFunc = (fn, ms) => { fn(); return window.setInterval(fn, ms); };
+
+  const loadFrames = (folder, page = 1) => {
+    setViewingFrames(folder); setFramesPage(page);
+    api(`/api/frames/${encodeURIComponent(folder)}?page=${page}&per_page=24`).then(data => {
+      if (data) { setFrames(data.frames || []); setFramesTotalPages(data.total_pages); setFramesTotal(data.total); }
+    });
+  };
+
   if (loading) return <div className="page"><div className="loading">Escaneando carpeta de videos...</div></div>;
 
+  // FRAME GALLERY VIEW
+  if (viewingFrames) {
+    return (
+      <div className="page">
+        <div className="page-header">
+          <div><h1>Frames: {viewingFrames}</h1><p>{framesTotal} imágenes extraídas</p></div>
+          <button className="btn-secondary" onClick={() => { setViewingFrames(null); setFrames([]); }}>← Volver a Videos</button>
+        </div>
+        <div className="frames-grid">
+          {frames.map(f => (
+            <div className="frame-card" key={f.name}>
+              <img src={f.url} alt={f.name} loading="lazy" />
+              <span className="frame-name">{f.name}</span>
+            </div>
+          ))}
+        </div>
+        {framesTotalPages > 1 && (
+          <div className="frames-pagination">
+            <button className="btn-sm btn-secondary" disabled={framesPage <= 1} onClick={() => loadFrames(viewingFrames, framesPage - 1)}>← Anterior</button>
+            <span className="pagination-info">Página {framesPage} de {framesTotalPages}</span>
+            <button className="btn-sm btn-secondary" disabled={framesPage >= framesTotalPages} onClick={() => loadFrames(viewingFrames, framesPage + 1)}>Siguiente →</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // VIDEOS LIST VIEW
   return (
     <div className="page">
       <div className="page-header">
-        <div>
-          <h1>Videos</h1>
-          <p>Videos disponibles en la carpeta compartida</p>
-        </div>
+        <div><h1>Videos</h1><p>Videos disponibles en la carpeta compartida</p></div>
         <button className="btn-secondary" onClick={load}>↻ Actualizar</button>
       </div>
 
@@ -288,31 +354,74 @@ function VideosPage() {
       <div className="video-instructions">
         <p>Para agregar videos, copia archivos desde Windows a:</p>
         <code>\\esgecafs001.imagina.local\Aplicaciones\IAjesus\videos\</code>
-        <p>Los videos aparecerán aquí automáticamente.</p>
       </div>
 
       <div className="videos-list">
         {videos.map(v => (
-          <div className="card video-card" key={v.name}>
-            <div className="video-icon">▶</div>
-            <div className="video-info">
-              <h4>{v.name}</h4>
-              <div className="video-meta">
-                <span>{v.size}</span>
-                <span>·</span>
-                <span>{v.duration || '—'}</span>
-                <span>·</span>
-                <span>{v.extension.toUpperCase()}</span>
+          <div className="card video-card-full" key={v.name}>
+            <div className="video-card-top">
+              <div className="video-icon">▶</div>
+              <div className="video-info">
+                <h4>{v.name}</h4>
+                <div className="video-meta">
+                  <span>{v.size}</span><span>·</span><span>{v.duration}</span><span>·</span><span>{v.extension.toUpperCase()}</span>
+                </div>
               </div>
+              {v.frames_count > 0 && (
+                <button className="btn-sm btn-primary" onClick={() => loadFrames(v.frames_folder)}>
+                  📷 Ver {v.frames_count} frames
+                </button>
+              )}
             </div>
+
+            {/* Extraction UI */}
+            {extracting === v.name ? (
+              <div className="extract-panel">
+                {extractStatus?.status === 'running' ? (
+                  <div className="extract-progress">
+                    <div className="progress-bar"><div className="progress-fill" style={{ width: `${extractStatus.progress || 0}%` }}></div></div>
+                    <div className="progress-info">
+                      <span>Extrayendo... {extractStatus.extracted || 0} / {extractStatus.total || '?'} frames</span>
+                      <span>{extractStatus.progress || 0}%</span>
+                    </div>
+                  </div>
+                ) : extractStatus?.status === 'done' ? (
+                  <div className="test-result success">
+                    ✓ Extracción completada: {extractStatus.extracted} frames generados
+                    <button className="btn-sm btn-primary" style={{marginLeft: 12}} onClick={() => { setExtracting(null); setExtractStatus(null); loadFrames(v.frames_folder || v.name.replace(/\.[^.]+$/, '')); }}>Ver frames</button>
+                  </div>
+                ) : extractStatus?.status === 'error' ? (
+                  <div className="test-result error">✕ Error: {extractStatus.message}</div>
+                ) : (
+                  <div className="extract-form">
+                    <div className="extract-row">
+                      <div className="form-group" style={{maxWidth: 160}}>
+                        <label>Intervalo (segundos)</label>
+                        <input type="number" value={interval} min={1} max={300} onChange={e => setInterval_(parseInt(e.target.value) || 10)} />
+                      </div>
+                      <div className="extract-estimate">
+                        <span className="extract-estimate-value">{estimateFrames(v)}</span>
+                        <span className="extract-estimate-label">imágenes estimadas</span>
+                      </div>
+                    </div>
+                    <div className="form-actions">
+                      <button className="btn-primary btn-sm" onClick={() => startExtraction(v)}>Extraer frames</button>
+                      <button className="btn-secondary btn-sm" onClick={() => { setExtracting(null); setExtractStatus(null); }}>Cancelar</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="video-card-actions">
+                <button className="btn-sm btn-secondary" onClick={() => { setExtracting(v.name); setExtractStatus(null); }}>
+                  ✂ Extraer frames
+                </button>
+              </div>
+            )}
           </div>
         ))}
         {videos.length === 0 && (
-          <div className="empty-state">
-            <div className="empty-icon">▶</div>
-            <p>No hay videos en la carpeta compartida</p>
-            <p className="empty-text">Copia videos a \\esgecafs001...\IAjesus\videos\</p>
-          </div>
+          <div className="empty-state"><div className="empty-icon">▶</div><p>No hay videos en la carpeta compartida</p></div>
         )}
       </div>
     </div>

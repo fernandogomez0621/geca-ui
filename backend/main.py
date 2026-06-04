@@ -632,6 +632,10 @@ def get_stats(db: Session = Depends(get_db), user: User = Depends(get_current_us
 # ==============================================
 
 VIDEOS_DIR = os.getenv("VIDEOS_DIR", "/mnt/shared/videos")
+FRAMES_DIR = os.getenv("FRAMES_DIR", "/mnt/shared/frames")
+
+# Track extraction jobs in memory
+extraction_jobs: dict[str, dict] = {}
 
 def get_video_info(filepath: str) -> dict:
     """Get video file info including duration if ffprobe available"""
@@ -640,7 +644,6 @@ def get_video_info(filepath: str) -> dict:
     name = os.path.basename(filepath)
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
-    # Human-readable size
     if size_bytes >= 1_000_000_000:
         size_str = f"{size_bytes / 1_000_000_000:.1f} GB"
     elif size_bytes >= 1_000_000:
@@ -655,9 +658,10 @@ def get_video_info(filepath: str) -> dict:
         "size": size_str,
         "extension": ext,
         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "duration_secs": 0,
+        "duration": "—",
     }
 
-    # Try to get duration with ffprobe
     try:
         import subprocess
         result = subprocess.run(
@@ -665,8 +669,8 @@ def get_video_info(filepath: str) -> dict:
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
-            import json
-            data = json.loads(result.stdout)
+            import json as _json
+            data = _json.loads(result.stdout)
             duration_secs = float(data.get("format", {}).get("duration", 0))
             hours = int(duration_secs // 3600)
             minutes = int((duration_secs % 3600) // 60)
@@ -674,21 +678,97 @@ def get_video_info(filepath: str) -> dict:
             info["duration_secs"] = round(duration_secs)
             info["duration"] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     except Exception:
-        info["duration"] = "—"
-        info["duration_secs"] = 0
+        pass
+
+    # Check if frames exist
+    video_stem = os.path.splitext(name)[0]
+    frames_path = os.path.join(FRAMES_DIR, video_stem)
+    if os.path.isdir(frames_path):
+        frame_files = [f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        info["frames_count"] = len(frame_files)
+        info["frames_folder"] = video_stem
+    else:
+        info["frames_count"] = 0
+        info["frames_folder"] = None
+
+    # Check extraction status
+    if name in extraction_jobs:
+        info["extraction_status"] = extraction_jobs[name]
 
     return info
 
 
+def extract_frames_worker(video_path: str, output_dir: str, interval: float, job_key: str):
+    """Background worker to extract frames from video"""
+    import cv2
+    import math
+
+    try:
+        extraction_jobs[job_key] = {"status": "running", "progress": 0, "total": 0, "extracted": 0}
+        os.makedirs(output_dir, exist_ok=True)
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            extraction_jobs[job_key] = {"status": "error", "message": "No se pudo abrir el video"}
+            return
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+
+        if fps <= 0:
+            fps = 25.0
+
+        duration_sec = total_frames / fps if total_frames > 0 else 0
+        num_capturas = math.floor(duration_sec / interval) + 1 if duration_sec > 0 else 0
+
+        extraction_jobs[job_key]["total"] = num_capturas
+
+        guardadas = 0
+        for idx in range(num_capturas):
+            t = idx * interval
+            target_frame = int(round(t * fps))
+
+            if total_frames > 0 and target_frame >= total_frames:
+                break
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ok, frame = cap.read()
+
+            if not ok or frame is None:
+                recovered = False
+                for delta in (-1, 1, -2, 2):
+                    alt = target_frame + delta
+                    if alt < 0 or (total_frames and alt >= total_frames):
+                        continue
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, alt)
+                    ok2, frame2 = cap.read()
+                    if ok2 and frame2 is not None:
+                        frame = frame2
+                        recovered = True
+                        break
+                if not recovered:
+                    break
+
+            out_name = f"{guardadas + 1:04d}.png"
+            cv2.imwrite(os.path.join(output_dir, out_name), frame)
+            guardadas += 1
+            extraction_jobs[job_key]["extracted"] = guardadas
+            extraction_jobs[job_key]["progress"] = round(guardadas / num_capturas * 100)
+
+        cap.release()
+        extraction_jobs[job_key] = {"status": "done", "extracted": guardadas, "total": num_capturas, "progress": 100}
+
+    except Exception as e:
+        extraction_jobs[job_key] = {"status": "error", "message": str(e)}
+
+
 @app.get("/api/videos")
 def list_videos(user: User = Depends(get_current_user)):
-    """Lista videos disponibles en la carpeta compartida"""
     if not os.path.exists(VIDEOS_DIR):
         return {"videos": [], "status": "folder_not_found", "path": VIDEOS_DIR}
 
     video_extensions = {".mp4", ".ts", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".mts", ".m2ts"}
     videos = []
-
     for entry in sorted(os.listdir(VIDEOS_DIR)):
         filepath = os.path.join(VIDEOS_DIR, entry)
         if os.path.isfile(filepath):
@@ -696,17 +776,95 @@ def list_videos(user: User = Depends(get_current_user)):
             if ext in video_extensions:
                 videos.append(get_video_info(filepath))
 
-    return {
-        "videos": videos,
-        "total": len(videos),
-        "path": VIDEOS_DIR,
-    }
+    return {"videos": videos, "total": len(videos), "path": VIDEOS_DIR}
 
 
 @app.get("/api/videos/{filename}/info")
 def get_video_detail(filename: str, user: User = Depends(get_current_user)):
-    """Obtiene información detallada de un video"""
     filepath = os.path.join(VIDEOS_DIR, filename)
     if not os.path.exists(filepath):
         raise HTTPException(404, "Video no encontrado")
     return get_video_info(filepath)
+
+
+class ExtractRequest(BaseModel):
+    interval: float = 10.0
+
+@app.post("/api/videos/{filename}/extract")
+def extract_frames(filename: str, data: ExtractRequest, user: User = Depends(get_current_user)):
+    """Inicia extracción de frames en background"""
+    import math
+    filepath = os.path.join(VIDEOS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Video no encontrado")
+
+    video_stem = os.path.splitext(filename)[0]
+    output_dir = os.path.join(FRAMES_DIR, video_stem)
+
+    # Check if already running
+    if filename in extraction_jobs and extraction_jobs[filename].get("status") == "running":
+        return {"status": "already_running", "job": extraction_jobs[filename]}
+
+    # Estimate frames
+    info = get_video_info(filepath)
+    duration = info.get("duration_secs", 0)
+    estimated = math.floor(duration / data.interval) + 1 if duration > 0 else 0
+
+    # Start background thread
+    import threading
+    thread = threading.Thread(
+        target=extract_frames_worker,
+        args=(filepath, output_dir, data.interval, filename),
+        daemon=True,
+    )
+    thread.start()
+
+    return {"status": "started", "estimated_frames": estimated, "interval": data.interval, "output_dir": video_stem}
+
+
+@app.get("/api/videos/{filename}/extract/status")
+def get_extraction_status(filename: str, user: User = Depends(get_current_user)):
+    if filename in extraction_jobs:
+        return extraction_jobs[filename]
+    # Check if frames folder exists
+    video_stem = os.path.splitext(filename)[0]
+    frames_path = os.path.join(FRAMES_DIR, video_stem)
+    if os.path.isdir(frames_path):
+        count = len([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg'))])
+        return {"status": "done", "extracted": count}
+    return {"status": "not_started"}
+
+
+@app.get("/api/frames/{folder}")
+def list_frames(folder: str, page: int = 1, per_page: int = 20, user: User = Depends(get_current_user)):
+    """Lista frames extraídos con paginación"""
+    frames_path = os.path.join(FRAMES_DIR, folder)
+    if not os.path.isdir(frames_path):
+        raise HTTPException(404, "Carpeta de frames no encontrada")
+
+    all_frames = sorted([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    total = len(all_frames)
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_frames = all_frames[start:end]
+
+    return {
+        "folder": folder,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": math.ceil(total / per_page) if total > 0 else 0,
+        "frames": [{"name": f, "url": f"/api/frames/{folder}/{f}"} for f in page_frames],
+    }
+
+
+from fastapi.responses import FileResponse
+import math
+
+@app.get("/api/frames/{folder}/{frame_name}")
+def get_frame_image(folder: str, frame_name: str):
+    """Sirve una imagen de frame"""
+    filepath = os.path.join(FRAMES_DIR, folder, frame_name)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Frame no encontrado")
+    return FileResponse(filepath)
