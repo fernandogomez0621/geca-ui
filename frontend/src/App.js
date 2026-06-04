@@ -49,7 +49,7 @@ function LoginPage() {
 // === LAYOUT ===
 function Layout({ children }) {
   const { user, logout } = useAuth(); const location = useLocation();
-  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
+  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
   if (user?.role === 'admin') navItems.push({ path: '/users', label: 'Usuarios', icon: '◇' });
   return (
     <div className="app-layout">
@@ -249,6 +249,76 @@ function UsersPage() {
   );
 }
 
+// === VIDEOS ===
+function VideosPage() {
+  const [videos, setVideos] = useState([]); const [loading, setLoading] = useState(true);
+  const [totalSize, setTotalSize] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    api('/api/videos').then(data => {
+      if (data) {
+        setVideos(data.videos || []);
+        const total = (data.videos || []).reduce((s, v) => s + v.size_bytes, 0);
+        if (total >= 1e9) setTotalSize(`${(total / 1e9).toFixed(1)} GB`);
+        else setTotalSize(`${(total / 1e6).toFixed(1)} MB`);
+      }
+      setLoading(false);
+    });
+  };
+  useEffect(load, []);
+
+  if (loading) return <div className="page"><div className="loading">Escaneando carpeta de videos...</div></div>;
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <div>
+          <h1>Videos</h1>
+          <p>Videos disponibles en la carpeta compartida</p>
+        </div>
+        <button className="btn-secondary" onClick={load}>↻ Actualizar</button>
+      </div>
+
+      <div className="video-summary">
+        <div className="video-summary-item"><span className="video-summary-value">{videos.length}</span><span className="video-summary-label">Videos</span></div>
+        <div className="video-summary-item"><span className="video-summary-value">{totalSize}</span><span className="video-summary-label">Total</span></div>
+      </div>
+
+      <div className="video-instructions">
+        <p>Para agregar videos, copia archivos desde Windows a:</p>
+        <code>\\esgecafs001.imagina.local\Aplicaciones\IAjesus\videos\</code>
+        <p>Los videos aparecerán aquí automáticamente.</p>
+      </div>
+
+      <div className="videos-list">
+        {videos.map(v => (
+          <div className="card video-card" key={v.name}>
+            <div className="video-icon">▶</div>
+            <div className="video-info">
+              <h4>{v.name}</h4>
+              <div className="video-meta">
+                <span>{v.size}</span>
+                <span>·</span>
+                <span>{v.duration || '—'}</span>
+                <span>·</span>
+                <span>{v.extension.toUpperCase()}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+        {videos.length === 0 && (
+          <div className="empty-state">
+            <div className="empty-icon">▶</div>
+            <p>No hay videos en la carpeta compartida</p>
+            <p className="empty-text">Copia videos a \\esgecafs001...\IAjesus\videos\</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProtectedRoute({ children }) { const { user } = useAuth(); if (!user) return <Navigate to="/login" />; return <Layout>{children}</Layout>; }
 
 function App() {
@@ -258,6 +328,7 @@ function App() {
       <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
       <Route path="/brands" element={<ProtectedRoute><BrandsPage /></ProtectedRoute>} />
       <Route path="/contexts" element={<ProtectedRoute><ContextsPage /></ProtectedRoute>} />
+      <Route path="/videos" element={<ProtectedRoute><VideosPage /></ProtectedRoute>} />
       <Route path="/cvat" element={<ProtectedRoute><CVATPage /></ProtectedRoute>} />
       <Route path="/users" element={<ProtectedRoute><UsersPage /></ProtectedRoute>} />
     </Routes></AuthProvider></BrowserRouter>

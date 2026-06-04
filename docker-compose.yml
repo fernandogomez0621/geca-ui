@@ -25,8 +25,11 @@ services:
     environment:
       DATABASE_URL: postgresql://geca:geca_secret@geca_db:5432/geca_brands
       SECRET_KEY: geca-production-secret-change-this
+      VIDEOS_DIR: /mnt/shared/videos
     ports:
       - "8000:8000"
+    volumes:
+      - /mnt/shared:/mnt/shared:ro
     depends_on:
       geca_db:
         condition: service_healthy

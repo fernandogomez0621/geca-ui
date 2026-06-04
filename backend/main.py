@@ -625,3 +625,88 @@ def get_stats(db: Session = Depends(get_db), user: User = Depends(get_current_us
         "total_contexts": db.query(Context).count(),
         "total_users": db.query(User).filter(User.is_active == True).count(),
     }
+
+
+# ==============================================
+#  VIDEOS ENDPOINTS
+# ==============================================
+
+VIDEOS_DIR = os.getenv("VIDEOS_DIR", "/mnt/shared/videos")
+
+def get_video_info(filepath: str) -> dict:
+    """Get video file info including duration if ffprobe available"""
+    stat = os.stat(filepath)
+    size_bytes = stat.st_size
+    name = os.path.basename(filepath)
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+    # Human-readable size
+    if size_bytes >= 1_000_000_000:
+        size_str = f"{size_bytes / 1_000_000_000:.1f} GB"
+    elif size_bytes >= 1_000_000:
+        size_str = f"{size_bytes / 1_000_000:.1f} MB"
+    else:
+        size_str = f"{size_bytes / 1_000:.1f} KB"
+
+    info = {
+        "name": name,
+        "path": filepath,
+        "size_bytes": size_bytes,
+        "size": size_str,
+        "extension": ext,
+        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+    }
+
+    # Try to get duration with ffprobe
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", filepath],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+            duration_secs = float(data.get("format", {}).get("duration", 0))
+            hours = int(duration_secs // 3600)
+            minutes = int((duration_secs % 3600) // 60)
+            seconds = int(duration_secs % 60)
+            info["duration_secs"] = round(duration_secs)
+            info["duration"] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    except Exception:
+        info["duration"] = "—"
+        info["duration_secs"] = 0
+
+    return info
+
+
+@app.get("/api/videos")
+def list_videos(user: User = Depends(get_current_user)):
+    """Lista videos disponibles en la carpeta compartida"""
+    if not os.path.exists(VIDEOS_DIR):
+        return {"videos": [], "status": "folder_not_found", "path": VIDEOS_DIR}
+
+    video_extensions = {".mp4", ".ts", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".mts", ".m2ts"}
+    videos = []
+
+    for entry in sorted(os.listdir(VIDEOS_DIR)):
+        filepath = os.path.join(VIDEOS_DIR, entry)
+        if os.path.isfile(filepath):
+            ext = os.path.splitext(entry)[1].lower()
+            if ext in video_extensions:
+                videos.append(get_video_info(filepath))
+
+    return {
+        "videos": videos,
+        "total": len(videos),
+        "path": VIDEOS_DIR,
+    }
+
+
+@app.get("/api/videos/{filename}/info")
+def get_video_detail(filename: str, user: User = Depends(get_current_user)):
+    """Obtiene información detallada de un video"""
+    filepath = os.path.join(VIDEOS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Video no encontrado")
+    return get_video_info(filepath)
