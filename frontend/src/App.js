@@ -1,5 +1,7 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend, AreaChart, Area } from 'recharts';
+import * as XLSX from 'xlsx';
 import './styles/App.css';
 
 const API = '';
@@ -284,6 +286,9 @@ function VideosPage() {
   const [transSearch, setTransSearch] = useState('');
   const [transStartTime, setTransStartTime] = useState('');
   const [transEndTime, setTransEndTime] = useState('');
+  // Analytics state
+  const [viewingAnalytics, setViewingAnalytics] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
 
   const load = () => {
     setLoading(true);
@@ -372,7 +377,134 @@ function VideosPage() {
     return parseFloat(str) || 0;
   };
 
+  const loadAnalytics = async (filename) => {
+    const data = await api(`/api/videos/${encodeURIComponent(filename)}/analytics`);
+    setAnalytics(data);
+    setViewingAnalytics(filename);
+  };
+
+  const exportToExcel = () => {
+    if (!analytics) return;
+    const wb = XLSX.utils.book_new();
+
+    // Sheet 1: Summary
+    const summary = [
+      ['Video', analytics.video],
+      ['Duración', analytics.duration_fmt],
+      ['Total Segmentos', analytics.total_segments],
+      ['Total Menciones', analytics.total_mentions],
+      ['Total Marcas', analytics.total_brands],
+      ['Cobertura (%)', analytics.coverage_pct],
+      ['Procesado', analytics.processed_at],
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Resumen');
+
+    // Sheet 2: Brands detail
+    const brandsData = [['Marca', 'Menciones', 'Primera Mención', 'Última Mención', 'Intervalo Promedio (s)']];
+    (analytics.brand_details || []).forEach(b => {
+      brandsData.push([b.name, b.count, b.first_mention, b.last_mention, b.avg_interval]);
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(brandsData), 'Marcas');
+
+    // Sheet 3: Timeline
+    const timeData = [['Intervalo', 'Total', ...(analytics.brand_names || [])]];
+    (analytics.timeline || []).forEach(t => {
+      timeData.push([t.time, t.total, ...(analytics.brand_names || []).map(n => t[n] || 0)]);
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(timeData), 'Timeline');
+
+    XLSX.writeFile(wb, `analytics_${analytics.video.replace(/\.[^.]+$/, '')}.xlsx`);
+  };
+
   if (loading) return <div className="page"><div className="loading">Escaneando carpeta de videos...</div></div>;
+
+  // ANALYTICS DASHBOARD VIEW
+  if (viewingAnalytics && analytics && analytics.status !== 'not_processed') {
+    const COLORS_CHART = ['#6c5ce7','#00b894','#ff6b6b','#ffd43b','#e17055','#0984e3','#22d3ee','#f06595','#20c997','#ff922b'];
+    const pieData = (analytics.brands_chart || []).map((b, i) => ({...b, fill: b.color || COLORS_CHART[i % COLORS_CHART.length]}));
+    return (
+      <div className="page page-wide">
+        <div className="page-header">
+          <div><h1>📊 Analítica: {viewingAnalytics.replace(/\.[^.]+$/, '')}</h1><p>Dashboard de menciones de audio</p></div>
+          <div style={{display:'flex', gap: 8}}>
+            <button className="btn-primary" onClick={exportToExcel}>⬇ Exportar Excel</button>
+            <button className="btn-secondary" onClick={() => { setViewingAnalytics(null); setAnalytics(null); }}>← Volver</button>
+          </div>
+        </div>
+
+        <div className="analytics-cards">
+          <div className="analytics-card"><div className="analytics-card-value">{analytics.total_mentions}</div><div className="analytics-card-label">Menciones Totales</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{analytics.total_brands}</div><div className="analytics-card-label">Marcas Detectadas</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{analytics.duration_fmt}</div><div className="analytics-card-label">Duración Video</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{analytics.total_segments}</div><div className="analytics-card-label">Segmentos Audio</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{analytics.coverage_pct}%</div><div className="analytics-card-label">Cobertura Menciones</div></div>
+        </div>
+
+        <div className="analytics-row">
+          <div className="card analytics-chart-card" style={{flex: 2}}>
+            <h3>Menciones por Marca</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={analytics.brands_chart || []} margin={{top: 10, right: 20, left: 0, bottom: 5}}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+                <XAxis dataKey="name" tick={{fill: '#9898b0', fontSize: 11}} angle={-25} textAnchor="end" height={60} />
+                <YAxis tick={{fill: '#9898b0', fontSize: 11}} />
+                <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} />
+                <Bar dataKey="mentions" radius={[4, 4, 0, 0]}>
+                  {(analytics.brands_chart || []).map((b, i) => <Cell key={i} fill={b.color || COLORS_CHART[i % COLORS_CHART.length]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="card analytics-chart-card" style={{flex: 1}}>
+            <h3>Distribución</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie data={pieData} dataKey="mentions" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={({name, percent}) => `${name} ${(percent*100).toFixed(0)}%`} labelLine={true}>
+                  {pieData.map((b, i) => <Cell key={i} fill={b.fill} />)}
+                </Pie>
+                <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="card analytics-chart-card">
+          <h3>Timeline de Menciones (intervalos de 5 min)</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <AreaChart data={analytics.timeline || []} margin={{top: 10, right: 20, left: 0, bottom: 5}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+              <XAxis dataKey="time" tick={{fill: '#9898b0', fontSize: 10}} />
+              <YAxis tick={{fill: '#9898b0', fontSize: 11}} />
+              <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} />
+              <Legend />
+              {(analytics.brand_names || []).map((name, i) => (
+                <Area key={name} type="monotone" dataKey={name} stackId="1" fill={COLORS_CHART[i % COLORS_CHART.length]} stroke={COLORS_CHART[i % COLORS_CHART.length]} fillOpacity={0.6} />
+              ))}
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="card" style={{marginTop: 16}}>
+          <h3>Detalle por Marca</h3>
+          <div className="analytics-table">
+            <div className="analytics-table-header">
+              <span>Marca</span><span>Menciones</span><span>Primera</span><span>Última</span><span>Intervalo Prom.</span>
+            </div>
+            {(analytics.brand_details || []).sort((a,b) => b.count - a.count).map(b => (
+              <div className="analytics-table-row" key={b.name}>
+                <span><div className="analytics-dot" style={{background: b.color}}></div>{b.name}</span>
+                <span className="mono">{b.count}</span>
+                <span className="mono">{b.first_mention}</span>
+                <span className="mono">{b.last_mention}</span>
+                <span className="mono">{b.avg_interval}s</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // TRANSCRIPTION VIEW
   if (viewingTranscription && transData) {
@@ -556,6 +688,7 @@ function VideosPage() {
                 <button className="btn-sm btn-secondary" onClick={() => startAudio(v)}>🎙 Procesar audio</button>
                 <button className="btn-sm btn-secondary" onClick={() => loadTranscription(v.name)}>📝 Transcripción</button>
                 <button className="btn-sm btn-secondary" onClick={() => loadMentions(v.name)}>📋 Menciones</button>
+                <button className="btn-sm btn-primary" onClick={() => loadAnalytics(v.name)}>📊 Analítica</button>
               </div>
             )}
           </div>

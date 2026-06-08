@@ -1019,3 +1019,102 @@ def get_transcription(
         "language": data.get("language"),
         "duration": data.get("duration"),
     }
+
+
+@app.get("/api/videos/{filename}/analytics")
+def get_analytics(filename: str, user: User = Depends(get_current_user)):
+    """Generates analytics data from transcription and mentions"""
+    import json as _json
+
+    video_stem = os.path.splitext(filename)[0]
+    mentions_file = os.path.join(AUDIO_DIR, video_stem, "brand_mentions.json")
+    trans_file = os.path.join(AUDIO_DIR, video_stem, "transcription.json")
+
+    if not os.path.exists(mentions_file):
+        return {"status": "not_processed"}
+
+    with open(mentions_file) as f:
+        mentions_data = _json.load(f)
+
+    duration = 0
+    total_segments = 0
+    if os.path.exists(trans_file):
+        with open(trans_file) as f:
+            trans_data = _json.load(f)
+        duration = trans_data.get("duration", 0)
+        total_segments = len(trans_data.get("segments", []))
+
+    brands = mentions_data.get("brands", {})
+
+    # Summary
+    total_mentions = mentions_data.get("total_mentions", 0)
+    total_brands = len(brands)
+
+    # Mentions per brand (for bar chart)
+    brands_chart = []
+    for name, info in sorted(brands.items(), key=lambda x: -x[1]["count"]):
+        brands_chart.append({
+            "name": name,
+            "mentions": info["count"],
+            "color": info.get("color", "#6c5ce7"),
+        })
+
+    # Timeline: mentions distributed in 5-minute intervals
+    interval_minutes = 5
+    timeline = []
+    if duration > 0:
+        num_intervals = math.ceil(duration / (interval_minutes * 60))
+        for i in range(num_intervals):
+            start = i * interval_minutes * 60
+            end = (i + 1) * interval_minutes * 60
+            h1 = int(start // 3600)
+            m1 = int((start % 3600) // 60)
+            label = f"{h1:02d}:{m1:02d}"
+            interval_data = {"time": label, "total": 0}
+            for bname, info in brands.items():
+                count = sum(1 for m in info.get("mentions", []) if start <= m["start"] < end)
+                interval_data[bname] = count
+                interval_data["total"] += count
+            timeline.append(interval_data)
+
+    # Percentage of video with mentions
+    mention_seconds = set()
+    for bname, info in brands.items():
+        for m in info.get("mentions", []):
+            for sec in range(int(m["start"]), int(m["end"]) + 1):
+                mention_seconds.add(sec)
+    coverage_pct = round(len(mention_seconds) / duration * 100, 1) if duration > 0 else 0
+
+    # First and last mention per brand
+    brand_details = []
+    for name, info in brands.items():
+        m_list = info.get("mentions", [])
+        if m_list:
+            brand_details.append({
+                "name": name,
+                "count": info["count"],
+                "color": info.get("color", "#6c5ce7"),
+                "first_mention": m_list[0]["start_fmt"],
+                "last_mention": m_list[-1]["start_fmt"],
+                "avg_interval": round((m_list[-1]["start"] - m_list[0]["start"]) / max(len(m_list) - 1, 1)),
+            })
+
+    # Duration formatted
+    dur_h = int(duration // 3600)
+    dur_m = int((duration % 3600) // 60)
+    dur_s = int(duration % 60)
+
+    return {
+        "video": filename,
+        "duration": duration,
+        "duration_fmt": f"{dur_h:02d}:{dur_m:02d}:{dur_s:02d}",
+        "total_segments": total_segments,
+        "total_mentions": total_mentions,
+        "total_brands": total_brands,
+        "coverage_pct": coverage_pct,
+        "brands_chart": brands_chart,
+        "timeline": timeline,
+        "brand_names": list(brands.keys()),
+        "brand_details": brand_details,
+        "processed_at": mentions_data.get("processed_at"),
+    }
