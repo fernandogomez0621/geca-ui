@@ -65,6 +65,7 @@ class Brand(Base):
     logo_url = Column(Text, nullable=True)
     color = Column(String(7), default="#6c5ce7")
     client = Column(String(100), nullable=True)
+    audio_aliases = Column(Text, nullable=True)  # comma-separated aliases for audio detection
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     subbrands = relationship("SubBrand", back_populates="brand", cascade="all, delete-orphan")
@@ -142,12 +143,14 @@ class BrandCreate(BaseModel):
     logo_url: Optional[str] = None
     color: str = "#6c5ce7"
     client: Optional[str] = None
+    audio_aliases: Optional[str] = None
 
 class BrandUpdate(BaseModel):
     display_name: Optional[str] = None
     logo_url: Optional[str] = None
     color: Optional[str] = None
     client: Optional[str] = None
+    audio_aliases: Optional[str] = None
     is_active: Optional[bool] = None
 
 class BrandOut(BaseModel):
@@ -157,6 +160,7 @@ class BrandOut(BaseModel):
     logo_url: Optional[str]
     color: str
     client: Optional[str]
+    audio_aliases: Optional[str]
     is_active: bool
     created_at: datetime
     subbrands: list = []
@@ -868,3 +872,100 @@ def get_frame_image(folder: str, frame_name: str):
     if not os.path.exists(filepath):
         raise HTTPException(404, "Frame no encontrado")
     return FileResponse(filepath)
+
+
+# ==============================================
+#  AUDIO PROCESSING ENDPOINTS
+# ==============================================
+
+AUDIO_DIR = os.getenv("AUDIO_DIR", "/mnt/shared/audio")
+WHISPER_URL = os.getenv("WHISPER_URL", "http://geca_whisper:8001")
+
+
+@app.get("/api/brands/aliases")
+def get_all_aliases(db: Session = Depends(get_db)):
+    """Returns all brand aliases for whisper brand matching"""
+    brands = db.query(Brand).filter(Brand.is_active == True).all()
+    aliases_map = {}
+    for b in brands:
+        terms = [b.name.lower(), b.display_name.lower()]
+        if b.audio_aliases:
+            for a in b.audio_aliases.split(","):
+                a = a.strip().lower()
+                if a:
+                    terms.append(a)
+        aliases_map[b.display_name] = {
+            "brand_id": b.id,
+            "color": b.color,
+            "terms": list(set(terms)),
+        }
+    return {"aliases": aliases_map}
+
+
+@app.post("/api/videos/{filename}/process-audio")
+async def process_audio(filename: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Triggers audio extraction, transcription and brand matching"""
+    filepath = os.path.join(VIDEOS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Video no encontrado")
+
+    # Get brand aliases
+    brands = db.query(Brand).filter(Brand.is_active == True).all()
+    aliases_map = {}
+    brand_names = []
+    for b in brands:
+        terms = [b.name.lower(), b.display_name.lower()]
+        if b.audio_aliases:
+            for a in b.audio_aliases.split(","):
+                a = a.strip().lower()
+                if a:
+                    terms.append(a)
+        aliases_map[b.display_name] = {"brand_id": b.id, "color": b.color, "terms": list(set(terms))}
+        brand_names.append(b.display_name)
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{WHISPER_URL}/transcribe", json={
+                "video_path": filepath,
+                "aliases": aliases_map,
+                "brand_names": brand_names,
+            })
+            return resp.json()
+    except Exception as e:
+        return {"status": "error", "message": f"No se pudo conectar con el servicio whisper: {str(e)}"}
+
+
+@app.get("/api/videos/{filename}/audio/status")
+def get_audio_status(filename: str, user: User = Depends(get_current_user)):
+    """Gets audio processing status"""
+    video_stem = os.path.splitext(filename)[0]
+    audio_dir = os.path.join(AUDIO_DIR, video_stem)
+
+    # Check if results exist
+    mentions_file = os.path.join(audio_dir, "brand_mentions.json")
+    transcription_file = os.path.join(audio_dir, "transcription.json")
+    status_file = os.path.join(audio_dir, "status.json")
+
+    if os.path.exists(status_file):
+        import json
+        with open(status_file) as f:
+            return json.load(f)
+
+    if os.path.exists(mentions_file):
+        return {"status": "done"}
+
+    return {"status": "not_started"}
+
+
+@app.get("/api/videos/{filename}/mentions")
+def get_mentions(filename: str, user: User = Depends(get_current_user)):
+    """Gets brand mentions from transcription"""
+    video_stem = os.path.splitext(filename)[0]
+    mentions_file = os.path.join(AUDIO_DIR, video_stem, "brand_mentions.json")
+
+    if not os.path.exists(mentions_file):
+        return {"mentions": [], "status": "not_processed"}
+
+    import json
+    with open(mentions_file) as f:
+        return json.load(f)

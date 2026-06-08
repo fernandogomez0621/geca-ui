@@ -27,6 +27,8 @@ services:
       SECRET_KEY: geca-production-secret-change-this
       VIDEOS_DIR: /mnt/shared/videos
       FRAMES_DIR: /mnt/shared/frames
+      AUDIO_DIR: /mnt/shared/audio
+      WHISPER_URL: http://geca_whisper:8001
     ports:
       - "8000:8000"
     volumes:
@@ -34,6 +36,23 @@ services:
     depends_on:
       geca_db:
         condition: service_healthy
+    restart: unless-stopped
+
+  geca_whisper:
+    build: ./whisper
+    container_name: geca_whisper
+    environment:
+      AUDIO_DIR: /mnt/shared/audio
+    volumes:
+      - /mnt/shared:/mnt/shared
+      - whisper_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
 
   geca_frontend:
@@ -47,6 +66,7 @@ services:
 
 volumes:
   geca_db_data:
+  whisper_models:
 
 networks:
   default:
