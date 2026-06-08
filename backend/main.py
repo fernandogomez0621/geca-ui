@@ -969,3 +969,53 @@ def get_mentions(filename: str, user: User = Depends(get_current_user)):
     import json
     with open(mentions_file) as f:
         return json.load(f)
+
+
+@app.get("/api/videos/{filename}/transcription")
+def get_transcription(
+    filename: str,
+    page: int = 1,
+    per_page: int = 30,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    search: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Gets transcription with pagination and time/text filters"""
+    video_stem = os.path.splitext(filename)[0]
+    trans_file = os.path.join(AUDIO_DIR, video_stem, "transcription.json")
+
+    if not os.path.exists(trans_file):
+        return {"segments": [], "status": "not_processed", "total": 0}
+
+    import json as _json
+    with open(trans_file) as f:
+        data = _json.load(f)
+
+    segments = data.get("segments", [])
+
+    # Filter by time
+    if start_time is not None:
+        segments = [s for s in segments if s["end"] >= start_time]
+    if end_time is not None:
+        segments = [s for s in segments if s["start"] <= end_time]
+
+    # Filter by search text
+    if search:
+        search_lower = search.lower()
+        segments = [s for s in segments if search_lower in s["text"].lower()]
+
+    total = len(segments)
+    total_pages = math.ceil(total / per_page) if total > 0 else 0
+    start_idx = (page - 1) * per_page
+    page_segments = segments[start_idx:start_idx + per_page]
+
+    return {
+        "segments": page_segments,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "language": data.get("language"),
+        "duration": data.get("duration"),
+    }

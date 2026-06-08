@@ -198,6 +198,11 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-0); color: var(-
 .mention-text { flex: 1; color: var(--text-2); }
 .mention-term { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--text-3); flex-shrink: 0; }
 
+.trans-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
+.trans-item { display: flex; gap: 14px; padding: 8px 14px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
+.trans-time { font-family: 'Space Mono', monospace; font-size: 12px; color: var(--accent); flex-shrink: 0; min-width: 70px; padding-top: 1px; }
+.trans-text { flex: 1; color: var(--text-1); line-height: 1.5; }
+
 @media (max-width: 900px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .contexts-grid { grid-template-columns: repeat(2, 1fr); }

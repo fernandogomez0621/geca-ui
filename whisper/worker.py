@@ -110,27 +110,22 @@ def process_video(video_path: str, aliases: dict, brand_names: list[str], job_ke
 
         model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
 
-        # Use brand names as initial prompt to help Whisper recognize them
-        initial_prompt = None
-        if brand_names:
-            initial_prompt = f"Emisión deportiva. Marcas: {', '.join(brand_names)}."
-
-        update_status("transcribe", 10, "Transcribiendo audio...")
+        update_status("transcribe", 5, "Transcribiendo audio...")
 
         segments, info = model.transcribe(
             audio_path,
-            language="es",
-            initial_prompt=initial_prompt,
             beam_size=5,
             word_timestamps=True,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=1000),
         )
 
-        # Collect all segments
+        # Iterate over generator for real-time progress
         transcription = []
-        segments_list = list(segments)
-        total_segments = len(segments_list)
+        duration = info.duration or 1
+        count = 0
 
-        for i, seg in enumerate(segments_list):
+        for seg in segments:
             transcription.append({
                 "start": round(seg.start, 2),
                 "end": round(seg.end, 2),
@@ -138,9 +133,9 @@ def process_video(video_path: str, aliases: dict, brand_names: list[str], job_ke
                 "end_fmt": format_time(seg.end),
                 "text": seg.text.strip(),
             })
-            if total_segments > 0:
-                progress = 10 + int((i / total_segments) * 80)
-                update_status("transcribe", progress, f"Transcribiendo... {i}/{total_segments} segmentos")
+            count += 1
+            progress = min(95, int((seg.end / duration) * 85) + 10)
+            update_status("transcribe", progress, f"Transcribiendo... {format_time(seg.end)} / {format_time(duration)}")
 
         # Save transcription
         with open(os.path.join(output_dir, "transcription.json"), "w", encoding="utf-8") as f:

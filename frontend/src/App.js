@@ -277,6 +277,13 @@ function VideosPage() {
   const [audioStatus, setAudioStatus] = useState(null);
   const [viewingMentions, setViewingMentions] = useState(null);
   const [mentions, setMentions] = useState(null);
+  // Transcription state
+  const [viewingTranscription, setViewingTranscription] = useState(null);
+  const [transData, setTransData] = useState(null);
+  const [transPage, setTransPage] = useState(1);
+  const [transSearch, setTransSearch] = useState('');
+  const [transStartTime, setTransStartTime] = useState('');
+  const [transEndTime, setTransEndTime] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -347,7 +354,62 @@ function VideosPage() {
     setViewingMentions(filename);
   };
 
+  const loadTranscription = async (filename, page = 1) => {
+    let url = `/api/videos/${encodeURIComponent(filename)}/transcription?page=${page}&per_page=30`;
+    if (transSearch) url += `&search=${encodeURIComponent(transSearch)}`;
+    if (transStartTime) url += `&start_time=${parseTimeToSecs(transStartTime)}`;
+    if (transEndTime) url += `&end_time=${parseTimeToSecs(transEndTime)}`;
+    const data = await api(url);
+    setTransData(data);
+    setTransPage(page);
+    setViewingTranscription(filename);
+  };
+
+  const parseTimeToSecs = (str) => {
+    const parts = str.split(':').map(Number);
+    if (parts.length === 3) return parts[0]*3600 + parts[1]*60 + parts[2];
+    if (parts.length === 2) return parts[0]*60 + parts[1];
+    return parseFloat(str) || 0;
+  };
+
   if (loading) return <div className="page"><div className="loading">Escaneando carpeta de videos...</div></div>;
+
+  // TRANSCRIPTION VIEW
+  if (viewingTranscription && transData) {
+    return (
+      <div className="page">
+        <div className="page-header">
+          <div><h1>Transcripción: {viewingTranscription.replace(/\.[^.]+$/, '')}</h1>
+          <p>{transData.total} segmentos · Idioma: {transData.language || '?'}</p></div>
+          <button className="btn-secondary" onClick={() => { setViewingTranscription(null); setTransData(null); setTransSearch(''); setTransStartTime(''); setTransEndTime(''); }}>← Volver a Videos</button>
+        </div>
+        <div className="card" style={{marginBottom: 16}}>
+          <div className="form-row" style={{marginBottom: 0}}>
+            <div className="form-group"><label>Buscar texto</label><input placeholder="Buscar en transcripción..." value={transSearch} onChange={e => setTransSearch(e.target.value)} onKeyDown={e => { if(e.key==='Enter') loadTranscription(viewingTranscription, 1); }} /></div>
+            <div className="form-group" style={{maxWidth: 130}}><label>Desde (hh:mm:ss)</label><input placeholder="00:00:00" value={transStartTime} onChange={e => setTransStartTime(e.target.value)} /></div>
+            <div className="form-group" style={{maxWidth: 130}}><label>Hasta (hh:mm:ss)</label><input placeholder="01:30:00" value={transEndTime} onChange={e => setTransEndTime(e.target.value)} /></div>
+            <div className="form-group" style={{maxWidth: 100, justifyContent: 'flex-end'}}><button className="btn-primary btn-sm" onClick={() => loadTranscription(viewingTranscription, 1)}>Filtrar</button></div>
+          </div>
+        </div>
+        <div className="trans-list">
+          {transData.segments?.map((s, i) => (
+            <div className="trans-item" key={i}>
+              <span className="trans-time">{s.start_fmt}</span>
+              <span className="trans-text">{s.text}</span>
+            </div>
+          ))}
+          {transData.segments?.length === 0 && <div className="empty-text">No hay segmentos para este filtro</div>}
+        </div>
+        {transData.total_pages > 1 && (
+          <div className="frames-pagination">
+            <button className="btn-sm btn-secondary" disabled={transPage <= 1} onClick={() => loadTranscription(viewingTranscription, transPage - 1)}>← Anterior</button>
+            <span className="pagination-info">Página {transPage} de {transData.total_pages}</span>
+            <button className="btn-sm btn-secondary" disabled={transPage >= transData.total_pages} onClick={() => loadTranscription(viewingTranscription, transPage + 1)}>Siguiente →</button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // MENTIONS VIEW
   if (viewingMentions && mentions) {
@@ -492,7 +554,8 @@ function VideosPage() {
               <div className="video-card-actions">
                 <button className="btn-sm btn-secondary" onClick={() => { setExtracting(v.name); setExtractStatus(null); }}>✂ Extraer frames</button>
                 <button className="btn-sm btn-secondary" onClick={() => startAudio(v)}>🎙 Procesar audio</button>
-                <button className="btn-sm btn-secondary" onClick={() => loadMentions(v.name)}>📋 Ver menciones</button>
+                <button className="btn-sm btn-secondary" onClick={() => loadTranscription(v.name)}>📝 Transcripción</button>
+                <button className="btn-sm btn-secondary" onClick={() => loadMentions(v.name)}>📋 Menciones</button>
               </div>
             )}
           </div>
