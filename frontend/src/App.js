@@ -448,7 +448,7 @@ function VideosPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
                 <XAxis dataKey="name" tick={{fill: '#9898b0', fontSize: 11}} angle={-25} textAnchor="end" height={60} />
                 <YAxis tick={{fill: '#9898b0', fontSize: 11}} />
-                <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} />
+                <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} itemStyle={{color: '#eaeaf2'}} labelStyle={{color: '#eaeaf2', fontWeight: 'bold'}} />
                 <Bar dataKey="mentions" radius={[4, 4, 0, 0]}>
                   {(analytics.brands_chart || []).map((b, i) => <Cell key={i} fill={b.color || COLORS_CHART[i % COLORS_CHART.length]} />)}
                 </Bar>
@@ -463,7 +463,7 @@ function VideosPage() {
                 <Pie data={pieData} dataKey="mentions" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={({name, percent}) => `${name} ${(percent*100).toFixed(0)}%`} labelLine={true}>
                   {pieData.map((b, i) => <Cell key={i} fill={b.fill} />)}
                 </Pie>
-                <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} />
+                <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} itemStyle={{color: '#eaeaf2'}} labelStyle={{color: '#eaeaf2', fontWeight: 'bold'}} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -476,7 +476,7 @@ function VideosPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
               <XAxis dataKey="time" tick={{fill: '#9898b0', fontSize: 10}} />
               <YAxis tick={{fill: '#9898b0', fontSize: 11}} />
-              <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} />
+              <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} itemStyle={{color: '#eaeaf2'}} labelStyle={{color: '#eaeaf2', fontWeight: 'bold'}} />
               <Legend />
               {(analytics.brand_names || []).map((name, i) => (
                 <Area key={name} type="monotone" dataKey={name} stackId="1" fill={COLORS_CHART[i % COLORS_CHART.length]} stroke={COLORS_CHART[i % COLORS_CHART.length]} fillOpacity={0.6} />
@@ -616,7 +616,7 @@ function VideosPage() {
 
       <div className="video-instructions">
         <p>Para agregar videos, copia archivos desde Windows a:</p>
-        <code>\\esgecafs001.imagina.local\Aplicaciones\IAjesus\videos\</code>
+        <code>\\10.43.13.186\Compartida\videos\</code>
       </div>
 
       <div className="videos-list">
