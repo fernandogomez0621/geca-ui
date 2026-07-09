@@ -1056,6 +1056,7 @@ def get_analytics(filename: str, user: User = Depends(get_current_user)):
         brands_chart.append({
             "name": name,
             "mentions": info["count"],
+            "duration": info.get("total_duration", 0),
             "color": info.get("color", "#6c5ce7"),
         })
 
@@ -1077,13 +1078,13 @@ def get_analytics(filename: str, user: User = Depends(get_current_user)):
                 interval_data["total"] += count
             timeline.append(interval_data)
 
-    # Percentage of video with mentions
-    mention_seconds = set()
-    for bname, info in brands.items():
-        for m in info.get("mentions", []):
-            for sec in range(int(m["start"]), int(m["end"]) + 1):
-                mention_seconds.add(sec)
-    coverage_pct = round(len(mention_seconds) / duration * 100, 1) if duration > 0 else 0
+    # Precise mention duration from word timestamps
+    total_mention_duration = mentions_data.get("total_mention_duration", 0)
+    if total_mention_duration == 0:
+        # Fallback: sum from individual brands
+        for bname, info in brands.items():
+            total_mention_duration += info.get("total_duration", 0)
+    coverage_pct = round(total_mention_duration / duration * 100, 2) if duration > 0 else 0
 
     # First and last mention per brand
     brand_details = []
@@ -1094,6 +1095,8 @@ def get_analytics(filename: str, user: User = Depends(get_current_user)):
                 "name": name,
                 "count": info["count"],
                 "color": info.get("color", "#6c5ce7"),
+                "total_duration": info.get("total_duration", 0),
+                "avg_duration": round(info.get("total_duration", 0) / max(info["count"], 1), 2),
                 "first_mention": m_list[0]["start_fmt"],
                 "last_mention": m_list[-1]["start_fmt"],
                 "avg_interval": round((m_list[-1]["start"] - m_list[0]["start"]) / max(len(m_list) - 1, 1)),
@@ -1110,6 +1113,7 @@ def get_analytics(filename: str, user: User = Depends(get_current_user)):
         "duration_fmt": f"{dur_h:02d}:{dur_m:02d}:{dur_s:02d}",
         "total_segments": total_segments,
         "total_mentions": total_mentions,
+        "total_mention_duration": round(total_mention_duration, 2),
         "total_brands": total_brands,
         "coverage_pct": coverage_pct,
         "brands_chart": brands_chart,
@@ -1118,3 +1122,204 @@ def get_analytics(filename: str, user: User = Depends(get_current_user)):
         "brand_details": brand_details,
         "processed_at": mentions_data.get("processed_at"),
     }
+
+
+# ==============================================
+#  SQL SERVER SYNC
+# ==============================================
+
+SQLSERVER_HOST = os.getenv("SQLSERVER_HOST", "")
+SQLSERVER_PORT = int(os.getenv("SQLSERVER_PORT", "1433"))
+SQLSERVER_DB = os.getenv("SQLSERVER_DB", "")
+SQLSERVER_USER = os.getenv("SQLSERVER_USER", "")
+SQLSERVER_PASSWORD = os.getenv("SQLSERVER_PASSWORD", "")
+
+
+def get_mssql_conn():
+    """Get SQL Server connection"""
+    if not SQLSERVER_HOST or not SQLSERVER_USER:
+        return None
+    try:
+        import pymssql
+        conn = pymssql.connect(
+            server=SQLSERVER_HOST,
+            port=SQLSERVER_PORT,
+            user=SQLSERVER_USER,
+            password=SQLSERVER_PASSWORD,
+            database=SQLSERVER_DB,
+            charset="utf8",
+        )
+        return conn
+    except Exception as e:
+        print(f"SQL Server connection error: {e}")
+        return None
+
+
+def sync_to_sqlserver(filename: str):
+    """Sync audio processing results to SQL Server"""
+    import json as _json
+
+    conn = get_mssql_conn()
+    if not conn:
+        return {"status": "error", "message": "No SQL Server connection configured"}
+
+    video_stem = os.path.splitext(filename)[0]
+    mentions_file = os.path.join(AUDIO_DIR, video_stem, "brand_mentions.json")
+    trans_file = os.path.join(AUDIO_DIR, video_stem, "transcription.json")
+
+    if not os.path.exists(mentions_file):
+        return {"status": "error", "message": "No audio results found for this video"}
+
+    with open(mentions_file) as f:
+        mentions_data = _json.load(f)
+
+    trans_segments = []
+    language = None
+    if os.path.exists(trans_file):
+        with open(trans_file) as f:
+            trans_data = _json.load(f)
+        trans_segments = trans_data.get("segments", [])
+        language = trans_data.get("language")
+
+    try:
+        cursor = conn.cursor()
+
+        # Get video info
+        video_path = os.path.join(VIDEOS_DIR, filename)
+        duration = mentions_data.get("duration", 0)
+        size_bytes = os.path.getsize(video_path) if os.path.exists(video_path) else 0
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        dur_h = int((duration or 0) // 3600)
+        dur_m = int(((duration or 0) % 3600) // 60)
+        dur_s = int((duration or 0) % 60)
+        duration_fmt = f"{dur_h:02d}:{dur_m:02d}:{dur_s:02d}"
+
+        # 1. Upsert video
+        cursor.execute("SELECT id FROM dbo.geca_videos WHERE filename = %s", (filename,))
+        row = cursor.fetchone()
+        if row:
+            video_id = row[0]
+            cursor.execute("""
+                UPDATE dbo.geca_videos SET duration_secs=%s, duration_fmt=%s,
+                file_size_bytes=%s, format=%s, language=%s WHERE id=%s
+            """, (duration, duration_fmt, size_bytes, ext, language, video_id))
+        else:
+            cursor.execute("""
+                INSERT INTO dbo.geca_videos (filename, duration_secs, duration_fmt, file_size_bytes, format, language)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (filename, duration, duration_fmt, size_bytes, ext, language))
+            cursor.execute("SELECT SCOPE_IDENTITY()")
+            video_id = int(cursor.fetchone()[0])
+
+        # 2. Sync brands
+        brand_id_map = {}
+        for brand_name, info in mentions_data.get("brands", {}).items():
+            cursor.execute("SELECT id FROM dbo.geca_brands WHERE display_name = %s", (brand_name,))
+            row = cursor.fetchone()
+            if row:
+                brand_id_map[brand_name] = row[0]
+            else:
+                cursor.execute("""
+                    INSERT INTO dbo.geca_brands (name, display_name, color)
+                    VALUES (%s, %s, %s)
+                """, (brand_name.lower().replace(" ", "_"), brand_name, info.get("color", "#6c5ce7")))
+                cursor.execute("SELECT SCOPE_IDENTITY()")
+                brand_id_map[brand_name] = int(cursor.fetchone()[0])
+
+        # 3. Clear old data for this video
+        cursor.execute("DELETE FROM dbo.geca_video_brand_summary WHERE video_id = %s", (video_id,))
+        cursor.execute("DELETE FROM dbo.geca_audio_mentions WHERE video_id = %s", (video_id,))
+        cursor.execute("DELETE FROM dbo.geca_transcription_segments WHERE video_id = %s", (video_id,))
+        cursor.execute("DELETE FROM dbo.geca_audio_jobs WHERE video_id = %s", (video_id,))
+
+        # 4. Insert audio job
+        cursor.execute("""
+            INSERT INTO dbo.geca_audio_jobs (video_id, status, phase, total_segments, total_mentions,
+            total_mention_duration, coverage_pct, completed_at)
+            VALUES (%s, 'done', 'done', %s, %s, %s, %s, GETDATE())
+        """, (video_id, len(trans_segments), mentions_data.get("total_mentions", 0),
+              mentions_data.get("total_mention_duration", 0),
+              mentions_data.get("mention_coverage_pct", 0)))
+
+        # 5. Insert transcription segments
+        segment_id_map = {}
+        for i, seg in enumerate(trans_segments):
+            cursor.execute("""
+                INSERT INTO dbo.geca_transcription_segments
+                (video_id, segment_index, start_time, end_time, start_fmt, end_fmt, segment_text)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (video_id, i, seg["start"], seg["end"], seg["start_fmt"], seg["end_fmt"], seg["text"]))
+            cursor.execute("SELECT SCOPE_IDENTITY()")
+            segment_id_map[i] = int(cursor.fetchone()[0])
+
+        # 6. Insert mentions
+        for brand_name, info in mentions_data.get("brands", {}).items():
+            brand_id = brand_id_map.get(brand_name)
+            if not brand_id:
+                continue
+            for m in info.get("mentions", []):
+                cursor.execute("""
+                    INSERT INTO dbo.geca_audio_mentions
+                    (video_id, brand_id, start_time, end_time, duration, start_fmt, end_fmt,
+                     segment_text, matched_term, precision_type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (video_id, brand_id, m["start"], m["end"], m.get("duration", 0),
+                      m["start_fmt"], m["end_fmt"], m.get("text", ""),
+                      m.get("matched_term", ""), m.get("precision", "word")))
+
+        # 7. Insert brand summary
+        for brand_name, info in mentions_data.get("brands", {}).items():
+            brand_id = brand_id_map.get(brand_name)
+            if not brand_id:
+                continue
+            m_list = info.get("mentions", [])
+            if not m_list:
+                continue
+            total_dur = info.get("total_duration", 0)
+            avg_dur = total_dur / len(m_list) if m_list else 0
+            avg_interval = (m_list[-1]["start"] - m_list[0]["start"]) / max(len(m_list) - 1, 1) if len(m_list) > 1 else 0
+            pct = (total_dur / duration * 100) if duration > 0 else 0
+
+            cursor.execute("""
+                INSERT INTO dbo.geca_video_brand_summary
+                (video_id, brand_id, mention_count, total_duration, avg_duration,
+                 first_mention_time, last_mention_time, first_mention_fmt, last_mention_fmt,
+                 avg_interval, pct_of_video)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (video_id, brand_id, info["count"], total_dur, round(avg_dur, 2),
+                  m_list[0]["start"], m_list[-1]["start"],
+                  m_list[0]["start_fmt"], m_list[-1]["start_fmt"],
+                  round(avg_interval, 2), round(pct, 2)))
+
+        conn.commit()
+        conn.close()
+        return {"status": "ok", "video_id": video_id, "segments": len(trans_segments),
+                "mentions": mentions_data.get("total_mentions", 0)}
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/videos/{filename}/sync-sqlserver")
+def sync_video_to_sqlserver(filename: str, user: User = Depends(get_current_user)):
+    """Sync audio results to SQL Server"""
+    return sync_to_sqlserver(filename)
+
+
+@app.get("/api/sqlserver/status")
+def sqlserver_status(user: User = Depends(get_current_user)):
+    """Check SQL Server connection status"""
+    conn = get_mssql_conn()
+    if not conn:
+        return {"connected": False, "message": "No SQL Server configured"}
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DB_NAME() AS db, GETDATE() AS ts")
+        row = cursor.fetchone()
+        conn.close()
+        return {"connected": True, "database": row[0], "server_time": str(row[1]),
+                "host": SQLSERVER_HOST}
+    except Exception as e:
+        return {"connected": False, "message": str(e)}

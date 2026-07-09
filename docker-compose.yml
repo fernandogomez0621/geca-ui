@@ -27,6 +27,11 @@ services:
       FRAMES_DIR: /mnt/shared/frames
       AUDIO_DIR: /mnt/shared/audio
       WHISPER_URL: http://geca_whisper:8001
+      SQLSERVER_HOST: ESGECASQL003.tms-it.lan
+      SQLSERVER_PORT: "1433"
+      SQLSERVER_DB: IAGECA
+      SQLSERVER_USER: iacarga
+      SQLSERVER_PASSWORD: IAGECA_2026
     ports:
       - "8000:8000"
     volumes:

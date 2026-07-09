@@ -391,8 +391,8 @@ function VideosPage() {
     const summary = [
       ['Video', analytics.video],
       ['Duración', analytics.duration_fmt],
-      ['Total Segmentos', analytics.total_segments],
       ['Total Menciones', analytics.total_mentions],
+      ['Tiempo Real Menciones (s)', analytics.total_mention_duration || 0],
       ['Total Marcas', analytics.total_brands],
       ['Cobertura (%)', analytics.coverage_pct],
       ['Procesado', analytics.processed_at],
@@ -400,9 +400,9 @@ function VideosPage() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Resumen');
 
     // Sheet 2: Brands detail
-    const brandsData = [['Marca', 'Menciones', 'Primera Mención', 'Última Mención', 'Intervalo Promedio (s)']];
+    const brandsData = [['Marca', 'Menciones', 'Duración Total (s)', 'Duración Promedio (s)', 'Primera Mención', 'Última Mención']];
     (analytics.brand_details || []).forEach(b => {
-      brandsData.push([b.name, b.count, b.first_mention, b.last_mention, b.avg_interval]);
+      brandsData.push([b.name, b.count, b.total_duration || 0, b.avg_duration || 0, b.first_mention, b.last_mention]);
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(brandsData), 'Marcas');
 
@@ -436,8 +436,8 @@ function VideosPage() {
           <div className="analytics-card"><div className="analytics-card-value">{analytics.total_mentions}</div><div className="analytics-card-label">Menciones Totales</div></div>
           <div className="analytics-card"><div className="analytics-card-value">{analytics.total_brands}</div><div className="analytics-card-label">Marcas Detectadas</div></div>
           <div className="analytics-card"><div className="analytics-card-value">{analytics.duration_fmt}</div><div className="analytics-card-label">Duración Video</div></div>
-          <div className="analytics-card"><div className="analytics-card-value">{analytics.total_segments}</div><div className="analytics-card-label">Segmentos Audio</div></div>
-          <div className="analytics-card"><div className="analytics-card-value">{analytics.coverage_pct}%</div><div className="analytics-card-label">Cobertura Menciones</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{analytics.total_mention_duration || 0}s</div><div className="analytics-card-label">Tiempo Real Menciones</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{analytics.coverage_pct}%</div><div className="analytics-card-label">Cobertura</div></div>
         </div>
 
         <div className="analytics-row">
@@ -489,15 +489,16 @@ function VideosPage() {
           <h3>Detalle por Marca</h3>
           <div className="analytics-table">
             <div className="analytics-table-header">
-              <span>Marca</span><span>Menciones</span><span>Primera</span><span>Última</span><span>Intervalo Prom.</span>
+              <span>Marca</span><span>Menciones</span><span>Duración Total</span><span>Dur. Promedio</span><span>Primera</span><span>Última</span>
             </div>
             {(analytics.brand_details || []).sort((a,b) => b.count - a.count).map(b => (
               <div className="analytics-table-row" key={b.name}>
                 <span><div className="analytics-dot" style={{background: b.color}}></div>{b.name}</span>
                 <span className="mono">{b.count}</span>
+                <span className="mono">{b.total_duration || 0}s</span>
+                <span className="mono">{b.avg_duration || 0}s</span>
                 <span className="mono">{b.first_mention}</span>
                 <span className="mono">{b.last_mention}</span>
-                <span className="mono">{b.avg_interval}s</span>
               </div>
             ))}
           </div>
@@ -560,11 +561,13 @@ function VideosPage() {
               <div className="mention-brand-color" style={{background: info.color || '#6c5ce7'}}></div>
               <h3>{brandName}</h3>
               <span className="badge">{info.count} menciones</span>
+              {info.total_duration > 0 && <span className="badge">{info.total_duration}s total</span>}
             </div>
             <div className="mention-list">
               {info.mentions?.map((m, i) => (
                 <div className="mention-item" key={i}>
                   <span className="mention-time">{m.start_fmt}</span>
+                  <span className="mention-duration">{m.duration ? `${m.duration}s` : ''}</span>
                   <span className="mention-text">"{m.text}"</span>
                   <span className="mention-term">↳ {m.matched_term}</span>
                 </div>
@@ -689,6 +692,7 @@ function VideosPage() {
                 <button className="btn-sm btn-secondary" onClick={() => loadTranscription(v.name)}>📝 Transcripción</button>
                 <button className="btn-sm btn-secondary" onClick={() => loadMentions(v.name)}>📋 Menciones</button>
                 <button className="btn-sm btn-primary" onClick={() => loadAnalytics(v.name)}>📊 Analítica</button>
+                <button className="btn-sm btn-secondary" onClick={async () => { const r = await api(`/api/videos/${encodeURIComponent(v.name)}/sync-sqlserver`, {method:'POST'}); alert(r?.status === 'ok' ? `✓ Sincronizado: ${r.mentions} menciones, ${r.segments} segmentos` : `✕ Error: ${r?.message || 'No se pudo conectar'}`); }}>🔄 SQL Server</button>
               </div>
             )}
           </div>
