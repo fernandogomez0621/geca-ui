@@ -27,7 +27,7 @@ services:
       FRAMES_DIR: /mnt/shared/frames
       AUDIO_DIR: /mnt/shared/audio
       WHISPER_URL: http://geca_whisper:8001
-      SQLSERVER_HOST: ESGECASQL003.tms-it.lan
+      SQLSERVER_HOST: 10.43.13.164
       SQLSERVER_PORT: "1433"
       SQLSERVER_DB: IAGECA
       SQLSERVER_USER: iacarga
@@ -67,9 +67,41 @@ services:
       - geca_backend
     restart: unless-stopped
 
+  geca_jupyter:
+    image: quay.io/jupyter/pytorch-notebook:cuda12-pytorch-2.6.0
+    container_name: geca_jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - /mnt/shared:/mnt/shared
+      - jupyter_notebooks:/notebooks
+    environment:
+      MLFLOW_TRACKING_URI: http://geca_mlflow:5000
+    command: start-notebook.py --NotebookApp.token='geca2026' --notebook-dir=/notebooks
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  geca_mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.22.0
+    container_name: geca_mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    command: mlflow server --host 0.0.0.0 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts
+    restart: unless-stopped
+
 volumes:
   geca_db_data:
   whisper_models:
+  jupyter_notebooks:
+  mlflow_data:
 
 networks:
   default:

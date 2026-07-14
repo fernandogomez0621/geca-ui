@@ -274,6 +274,10 @@ function VideosPage() {
   const [viewingFrames, setViewingFrames] = useState(null);
   const [frames, setFrames] = useState([]); const [framesPage, setFramesPage] = useState(1);
   const [framesTotalPages, setFramesTotalPages] = useState(0); const [framesTotal, setFramesTotal] = useState(0);
+  const [selectedFrames, setSelectedFrames] = useState(new Set());
+  const [showCvatForm, setShowCvatForm] = useState(false);
+  const [cvatTaskName, setCvatTaskName] = useState('');
+  const [cvatLabels, setCvatLabels] = useState([]);
   // Audio state
   const [audioProcessing, setAudioProcessing] = useState(null);
   const [audioStatus, setAudioStatus] = useState(null);
@@ -329,10 +333,44 @@ function VideosPage() {
   const setIntervalFn = (fn, ms) => { fn(); return window.setInterval(fn, ms); };
 
   const loadFrames = (folder, page = 1) => {
-    setViewingFrames(folder); setFramesPage(page);
+    setViewingFrames(folder); setFramesPage(page); setSelectedFrames(new Set());
     api(`/api/frames/${encodeURIComponent(folder)}?page=${page}&per_page=24`).then(data => {
       if (data) { setFrames(data.frames || []); setFramesTotalPages(data.total_pages); setFramesTotal(data.total); }
     });
+  };
+
+  const toggleFrame = (name) => {
+    setSelectedFrames(prev => { const s = new Set(prev); s.has(name) ? s.delete(name) : s.add(name); return s; });
+  };
+  const selectAllFrames = () => { setSelectedFrames(new Set(frames.map(f => f.name))); };
+  const deselectAll = () => { setSelectedFrames(new Set()); };
+
+  const deleteSelectedFrames = async () => {
+    if (selectedFrames.size === 0) return;
+    if (!window.confirm(`¿Eliminar ${selectedFrames.size} frames seleccionados?`)) return;
+    await api(`/api/frames/${encodeURIComponent(viewingFrames)}/delete-batch`, {
+      method: 'POST', body: JSON.stringify({ frames: [...selectedFrames] })
+    });
+    setSelectedFrames(new Set());
+    loadFrames(viewingFrames, framesPage);
+  };
+
+  const deleteSingleFrame = async (folder, name) => {
+    await api(`/api/frames/${encodeURIComponent(folder)}/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    loadFrames(folder, framesPage);
+  };
+
+  const createCvatTask = async () => {
+    if (!cvatTaskName) return;
+    const res = await api(`/api/frames/${encodeURIComponent(viewingFrames)}/create-cvat-task`, {
+      method: 'POST', body: JSON.stringify({ task_name: cvatTaskName, labels: cvatLabels })
+    });
+    if (res?.status === 'ok') {
+      alert(`✓ Tarea "${res.task_name}" creada en CVAT con ${res.frames_uploaded} frames`);
+      setShowCvatForm(false); setCvatTaskName('');
+    } else {
+      alert(`✕ Error: ${res?.message || 'No se pudo crear'}`);
+    }
   };
 
   // Audio functions
@@ -582,13 +620,54 @@ function VideosPage() {
   // FRAME GALLERY VIEW
   if (viewingFrames) {
     return (
-      <div className="page">
+      <div className="page page-wide">
         <div className="page-header">
           <div><h1>Frames: {viewingFrames}</h1><p>{framesTotal} imágenes extraídas</p></div>
-          <button className="btn-secondary" onClick={() => { setViewingFrames(null); setFrames([]); }}>← Volver a Videos</button>
+          <div style={{display:'flex', gap: 8}}>
+            <button className="btn-primary btn-sm" onClick={() => { setShowCvatForm(true); setCvatTaskName(viewingFrames); }}>📤 Crear tarea CVAT</button>
+            <button className="btn-secondary btn-sm" onClick={() => { setViewingFrames(null); setFrames([]); setSelectedFrames(new Set()); }}>← Volver</button>
+          </div>
         </div>
+
+        {showCvatForm && (
+          <div className="card" style={{marginBottom: 16}}>
+            <h3>Crear Tarea en CVAT</h3>
+            <p className="empty-text">Los {framesTotal} frames se subirán directamente a CVAT (servidor a servidor, sin pasar por el navegador).</p>
+            <div className="form-row" style={{marginTop: 12}}>
+              <div className="form-group"><label>Nombre de la tarea</label><input value={cvatTaskName} onChange={e => setCvatTaskName(e.target.value)} /></div>
+              <div className="form-group"><label>Labels (separados por coma)</label><input placeholder="caixabank_valla, caixabank_camiseta" onChange={e => setCvatLabels(e.target.value.split(',').map(s => s.trim()).filter(Boolean))} /></div>
+            </div>
+            <div className="form-actions">
+              <button className="btn-primary btn-sm" onClick={createCvatTask}>Crear y subir frames</button>
+              <button className="btn-secondary btn-sm" onClick={() => setShowCvatForm(false)}>Cancelar</button>
+            </div>
+          </div>
+        )}
+
+        <div className="frames-toolbar">
+          <div style={{display:'flex', gap: 8, alignItems:'center'}}>
+            <button className="btn-sm btn-secondary" onClick={selectAllFrames}>Seleccionar todo</button>
+            <button className="btn-sm btn-secondary" onClick={deselectAll}>Deseleccionar</button>
+            {selectedFrames.size > 0 && (
+              <button className="btn-sm btn-danger" onClick={deleteSelectedFrames}>🗑 Eliminar {selectedFrames.size} seleccionados</button>
+            )}
+          </div>
+          <span className="pagination-info">{selectedFrames.size > 0 ? `${selectedFrames.size} seleccionados` : ''}</span>
+        </div>
+
         <div className="frames-grid">
-          {frames.map(f => (<div className="frame-card" key={f.name}><img src={f.url} alt={f.name} loading="lazy" /><span className="frame-name">{f.name}</span></div>))}
+          {frames.map(f => (
+            <div className={`frame-card ${selectedFrames.has(f.name) ? 'frame-selected' : ''}`} key={f.name}>
+              <div className="frame-check" onClick={() => toggleFrame(f.name)}>
+                <input type="checkbox" checked={selectedFrames.has(f.name)} readOnly />
+              </div>
+              <img src={f.url} alt={f.name} loading="lazy" onClick={() => toggleFrame(f.name)} />
+              <div className="frame-footer">
+                <span className="frame-name">{f.name}</span>
+                <button className="btn-icon-sm" onClick={() => deleteSingleFrame(viewingFrames, f.name)} title="Eliminar">✕</button>
+              </div>
+            </div>
+          ))}
         </div>
         {framesTotalPages > 1 && (
           <div className="frames-pagination">

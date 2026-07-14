@@ -874,6 +874,116 @@ def get_frame_image(folder: str, frame_name: str):
     return FileResponse(filepath)
 
 
+@app.delete("/api/frames/{folder}/{frame_name}")
+def delete_frame(folder: str, frame_name: str, user: User = Depends(get_current_user)):
+    """Elimina un frame individual"""
+    filepath = os.path.join(FRAMES_DIR, folder, frame_name)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Frame no encontrado")
+    os.remove(filepath)
+    return {"deleted": frame_name}
+
+
+class DeleteBatchRequest(BaseModel):
+    frames: list[str] = []
+
+@app.post("/api/frames/{folder}/delete-batch")
+def delete_frames_batch(folder: str, data: DeleteBatchRequest, user: User = Depends(get_current_user)):
+    """Elimina multiples frames"""
+    frames_path = os.path.join(FRAMES_DIR, folder)
+    deleted = 0
+    for f in data.frames:
+        fp = os.path.join(frames_path, f)
+        if os.path.exists(fp):
+            os.remove(fp)
+            deleted += 1
+    remaining = len([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]) if os.path.isdir(frames_path) else 0
+    return {"deleted": deleted, "remaining": remaining}
+
+
+class CreateCvatTaskRequest(BaseModel):
+    task_name: str
+    labels: list[str] = []
+
+@app.post("/api/frames/{folder}/create-cvat-task")
+async def create_cvat_task_from_frames(folder: str, data: CreateCvatTaskRequest, user: User = Depends(get_current_user)):
+    """Crea una tarea en CVAT y sube los frames directamente (servidor a servidor)"""
+    frames_path = os.path.join(FRAMES_DIR, folder)
+    if not os.path.isdir(frames_path):
+        raise HTTPException(404, "Carpeta de frames no encontrada")
+
+    frame_files = sorted([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    if not frame_files:
+        return {"status": "error", "message": "No hay frames en la carpeta"}
+
+    # Get CVAT config
+    db = SessionLocal()
+    cfg = get_cvat_config(db)
+    db.close()
+    if not cfg["cvat_url"] or not cfg["cvat_username"]:
+        return {"status": "error", "message": "CVAT no configurado"}
+
+    try:
+        headers = {"Host": cfg["cvat_host"]} if cfg["cvat_host"] else {}
+
+        # 1. Login to CVAT
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=headers) as client:
+            resp = await client.post("/api/auth/login", json={
+                "username": cfg["cvat_username"],
+                "password": cfg["cvat_password"],
+            })
+            if resp.status_code != 200:
+                return {"status": "error", "message": "No se pudo autenticar con CVAT"}
+            token = resp.json().get("key")
+
+        # 2. Create task with labels
+        auth_headers = {**headers, "Authorization": f"Token {token}"}
+        labels_payload = [{"name": l, "attributes": []} for l in data.labels] if data.labels else []
+
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=60, headers=auth_headers) as client:
+            resp = await client.post("/api/tasks", json={
+                "name": data.task_name,
+                "labels": labels_payload,
+            })
+            if resp.status_code not in (200, 201):
+                return {"status": "error", "message": f"Error creando tarea: {resp.text[:200]}"}
+            task_id = resp.json()["id"]
+
+        # 3. Upload frames in chunks (server to server)
+        import io
+        CHUNK_SIZE = 50  # frames per chunk
+
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=300, headers=auth_headers) as client:
+            for chunk_start in range(0, len(frame_files), CHUNK_SIZE):
+                chunk = frame_files[chunk_start:chunk_start + CHUNK_SIZE]
+                files = []
+                for fname in chunk:
+                    fpath = os.path.join(frames_path, fname)
+                    with open(fpath, "rb") as f:
+                        files.append(("client_files[]", (fname, f.read(), "image/png")))
+
+                upload_data = {"image_quality": 70}
+                if chunk_start == 0:
+                    upload_data["use_zip_chunks"] = "true"
+
+                resp = await client.post(
+                    f"/api/tasks/{task_id}/data",
+                    data=upload_data,
+                    files=files,
+                )
+
+        return {
+            "status": "ok",
+            "task_id": task_id,
+            "task_name": data.task_name,
+            "frames_uploaded": len(frame_files),
+            "labels": data.labels,
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 # ==============================================
 #  AUDIO PROCESSING ENDPOINTS
 # ==============================================
