@@ -1522,26 +1522,40 @@ async def import_cvat_dataset(task_id: int, user: User = Depends(get_current_use
             task_info = resp.json()
             task_name = task_info["name"].replace(" ", "_")
 
-        # 3. Request dataset export
+        # 3. Request dataset export (new CVAT API)
         async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=600, headers=auth_headers) as client:
-            # Trigger export
-            resp = await client.get(f"/api/tasks/{task_id}/dataset", params={
-                "format": "YOLO 1.1", "action": "download"
+            # Step 1: Start export
+            resp = await client.post(f"/api/tasks/{task_id}/dataset/export", params={
+                "format": "Ultralytics YOLO Detection 1.0", "save_images": "true"
             })
+            if resp.status_code not in (200, 201, 202):
+                return {"status": "error", "message": f"Error iniciando exportacion: {resp.status_code} {resp.text[:200]}"}
 
-            # If 202, export is being prepared, poll until ready
-            if resp.status_code == 202:
-                import asyncio
-                for _ in range(60):  # max 5 minutes
-                    await asyncio.sleep(5)
-                    resp = await client.get(f"/api/tasks/{task_id}/dataset", params={
-                        "format": "YOLO 1.1", "action": "download"
-                    })
-                    if resp.status_code == 200:
-                        break
+            rq_id = resp.json().get("rq_id", "")
 
+            # Step 2: Poll until ready
+            import asyncio
+            for _ in range(60):
+                await asyncio.sleep(3)
+                resp = await client.get(f"/api/requests/{rq_id}")
+                status = resp.json().get("status", "")
+                if status == "finished":
+                    break
+                if status == "failed":
+                    return {"status": "error", "message": "Exportacion fallida en CVAT"}
+
+            if status != "finished":
+                return {"status": "error", "message": "Timeout esperando exportacion"}
+
+            # Step 3: Download - replace external host with internal
+            result_url = resp.json().get("result_url", "")
+            if cfg["cvat_host"] and cfg["cvat_host"] in result_url:
+                result_url = result_url.replace(f"http://{cfg['cvat_host']}", "")
+                result_url = result_url.replace(f"https://{cfg['cvat_host']}", "")
+
+            resp = await client.get(result_url)
             if resp.status_code != 200:
-                return {"status": "error", "message": f"Error exportando: {resp.status_code}"}
+                return {"status": "error", "message": f"Error descargando: {resp.status_code}"}
 
             zip_data = resp.content
 
@@ -1561,28 +1575,48 @@ async def import_cvat_dataset(task_id: int, user: User = Depends(get_current_use
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(source_dir)
 
-        # 5. Reorganize into images/ and labels/
+        # 5. Reorganize: flatten train/val into single images/ and labels/
         img_dir = os.path.join(source_dir, "images")
         lbl_dir = os.path.join(source_dir, "labels")
-        os.makedirs(img_dir, exist_ok=True)
-        os.makedirs(lbl_dir, exist_ok=True)
 
-        # CVAT YOLO export puts everything in obj_train_data/
-        obj_dir = os.path.join(source_dir, "obj_train_data")
-        if os.path.isdir(obj_dir):
-            for f in os.listdir(obj_dir):
-                fpath = os.path.join(obj_dir, f)
-                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    shutil.move(fpath, os.path.join(img_dir, f))
-                elif f.lower().endswith('.txt'):
-                    shutil.move(fpath, os.path.join(lbl_dir, f))
+        # Ultralytics format has images/train/, images/val/, labels/train/, labels/val/
+        # Flatten into images/ and labels/ for combining later
+        for subdir in ["train", "val", "test"]:
+            for src_type, dst_dir in [("images", img_dir), ("labels", lbl_dir)]:
+                sub_path = os.path.join(source_dir, src_type, subdir)
+                if os.path.isdir(sub_path):
+                    os.makedirs(dst_dir, exist_ok=True)
+                    for f in os.listdir(sub_path):
+                        src = os.path.join(sub_path, f)
+                        dst = os.path.join(dst_dir, f)
+                        if not os.path.exists(dst):
+                            shutil.move(src, dst)
+                    shutil.rmtree(sub_path, ignore_errors=True)
+            # Clean empty parent dirs
+            for src_type in ["images", "labels"]:
+                sub_parent = os.path.join(source_dir, src_type)
+                if os.path.isdir(sub_parent) and not os.listdir(sub_parent):
+                    os.rmdir(sub_parent)
 
-        # Read class names from obj.names
+        # Read class names from data.yaml
         class_names = []
-        names_file = os.path.join(source_dir, "obj.names")
-        if os.path.exists(names_file):
-            with open(names_file) as f:
-                class_names = [l.strip() for l in f if l.strip()]
+        yaml_path = os.path.join(source_dir, "data.yaml")
+        if os.path.exists(yaml_path):
+            import yaml
+            with open(yaml_path) as f:
+                yaml_data = yaml.safe_load(f)
+                names = yaml_data.get("names", {})
+                if isinstance(names, dict):
+                    class_names = [names[k] for k in sorted(names.keys())]
+                elif isinstance(names, list):
+                    class_names = names
+
+        # Fallback: read from obj.names
+        if not class_names:
+            names_file = os.path.join(source_dir, "obj.names")
+            if os.path.exists(names_file):
+                with open(names_file) as f:
+                    class_names = [l.strip() for l in f if l.strip()]
 
         # Save metadata
         import json as _json
@@ -1599,8 +1633,10 @@ async def import_cvat_dataset(task_id: int, user: User = Depends(get_current_use
 
         # Cleanup
         os.remove(zip_path)
-        if os.path.isdir(obj_dir):
-            shutil.rmtree(obj_dir, ignore_errors=True)
+        for d in ["obj_train_data", "train", "valid", "test"]:
+            p = os.path.join(source_dir, d)
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
 
         return {"status": "ok", **meta}
 
@@ -1774,9 +1810,9 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
             if os.path.exists(lbl_path):
                 shutil.copy2(lbl_path, dst_lbl)
 
-    # Create data.yaml
+    # Create data.yaml (use "." as path so it works from any mount point)
     yaml_content = {
-        "path": ready_dir,
+        "path": ".",
         "train": "images/train",
         "val": "images/val",
         "names": {i: name for i, name in enumerate(all_class_names)},
@@ -1787,7 +1823,7 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
     with open(os.path.join(ready_dir, "data.yaml"), "w") as f:
         yaml.dump(yaml_content, f, default_flow_style=False, allow_unicode=True)
 
-    # Save metadata
+    # Save metadata with paths for both backend and jupyter
     meta = {
         "name": data.name,
         "tag": data.tag,
@@ -1801,6 +1837,7 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
         "num_classes": len(all_class_names),
         "created_at": datetime.utcnow().isoformat(),
         "data_yaml": os.path.join(ready_dir, "data.yaml"),
+        "jupyter_yaml": ready_dir.replace("/mnt/shared", "/home/jovyan/shared") + "/data.yaml",
     }
     with open(os.path.join(ready_dir, "meta.json"), "w") as f:
         _json.dump(meta, f, indent=2)

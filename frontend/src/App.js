@@ -303,7 +303,7 @@ function DatasetsPage() {
             <button className="btn-sm btn-danger" onClick={() => deleteDataset('ready', d.folder)}>✕</button>
           </div>
           <div className="video-meta" style={{marginTop: 6}}>
-            <span>data.yaml: {d.data_yaml}</span>
+            <span>Jupyter: <code style={{fontSize: 11}}>{d.jupyter_yaml || d.data_yaml}</code></span>
           </div>
         </div>
       )) : <p className="empty-text" style={{marginBottom: 20}}>Crea un dataset combinando sources importados</p>}
