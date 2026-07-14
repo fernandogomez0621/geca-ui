@@ -224,7 +224,7 @@ function DatasetsPage() {
         <div className="analytics-cards" style={{gridTemplateColumns: 'repeat(3, 1fr)'}}>
           <div className="analytics-card"><div className="analytics-card-value">{stats.total_images}</div><div className="analytics-card-label">Imágenes</div></div>
           <div className="analytics-card"><div className="analytics-card-value">{stats.total_annotations}</div><div className="analytics-card-label">Anotaciones</div></div>
-          <div className="analytics-card"><div className="analytics-card-value">{stats.class_names?.length || 0}</div><div className="analytics-card-label">Clases</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{stats.num_classes || stats.class_names?.length || 0}</div><div className="analytics-card-label">Clases</div></div>
         </div>
         <div className="card">
           <h3>Distribución por Clase</h3>

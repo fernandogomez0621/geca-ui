@@ -1687,18 +1687,19 @@ def get_dataset_stats(dtype: str, name: str, user: User = Depends(get_current_us
     if not os.path.isdir(base):
         raise HTTPException(404, "Dataset no encontrado")
 
-    # Find labels directory
+    # Find all label files (handle both flat and train/val structures)
     lbl_dir = os.path.join(base, "labels")
-    if not os.path.isdir(lbl_dir):
-        # For ready datasets, check train + val
-        lbl_train = os.path.join(lbl_dir, "train")
-        lbl_val = os.path.join(lbl_dir, "val")
-        label_files = []
-        for d in [lbl_train, lbl_val]:
-            if os.path.isdir(d):
-                label_files.extend([os.path.join(d, f) for f in os.listdir(d) if f.endswith('.txt')])
-    else:
-        label_files = [os.path.join(lbl_dir, f) for f in os.listdir(lbl_dir) if f.endswith('.txt')]
+    label_files = []
+    if os.path.isdir(lbl_dir):
+        # Check for subdirectories (train/val)
+        for sub in ["train", "val", "test"]:
+            sub_dir = os.path.join(lbl_dir, sub)
+            if os.path.isdir(sub_dir):
+                label_files.extend([os.path.join(sub_dir, f) for f in os.listdir(sub_dir) if f.endswith('.txt')])
+        # Also check flat structure
+        flat_files = [os.path.join(lbl_dir, f) for f in os.listdir(lbl_dir) if f.endswith('.txt')]
+        if flat_files and not label_files:
+            label_files = flat_files
 
     # Read class names
     import json as _json
@@ -1713,7 +1714,11 @@ def get_dataset_stats(dtype: str, name: str, user: User = Depends(get_current_us
         import yaml
         with open(yaml_path) as f:
             yaml_data = yaml.safe_load(f)
-            class_names = yaml_data.get("names", class_names)
+            names = yaml_data.get("names", {})
+            if isinstance(names, dict):
+                class_names = [names[k] for k in sorted(names.keys())]
+            elif isinstance(names, list):
+                class_names = names
 
     # Count annotations per class
     class_counts = {}
@@ -1742,6 +1747,7 @@ def get_dataset_stats(dtype: str, name: str, user: User = Depends(get_current_us
         "images_with_annotations": images_with_annotations,
         "total_annotations": total_annotations,
         "class_names": class_names,
+        "num_classes": len(class_names),
         "distribution": [{"class": c, "count": n} for c, n in distribution],
     }
 
