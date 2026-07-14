@@ -73,11 +73,11 @@ services:
     ports:
       - "8888:8888"
     volumes:
-      - /mnt/shared:/mnt/shared
-      - jupyter_notebooks:/notebooks
+      - /mnt/shared:/home/jovyan/shared
+      - jupyter_notebooks:/home/jovyan/work
     environment:
       MLFLOW_TRACKING_URI: http://geca_mlflow:5000
-    command: start-notebook.py --NotebookApp.token='geca2026' --notebook-dir=/notebooks
+    command: start-notebook.py --NotebookApp.token='geca2026' --notebook-dir=/home/jovyan
     deploy:
       resources:
         reservations:
@@ -94,7 +94,7 @@ services:
       - "5000:5000"
     volumes:
       - mlflow_data:/mlflow
-    command: mlflow server --host 0.0.0.0 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts
+    entrypoint: ["sh", "-c", "mkdir -p /mlflow/artifacts && mlflow server --host 0.0.0.0 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts"]
     restart: unless-stopped
 
 volumes:

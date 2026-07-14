@@ -360,11 +360,14 @@ function VideosPage() {
     loadFrames(folder, framesPage);
   };
 
+  const [cvatCreating, setCvatCreating] = useState(false);
   const createCvatTask = async () => {
-    if (!cvatTaskName) return;
+    if (!cvatTaskName || cvatCreating) return;
+    setCvatCreating(true);
     const res = await api(`/api/frames/${encodeURIComponent(viewingFrames)}/create-cvat-task`, {
       method: 'POST', body: JSON.stringify({ task_name: cvatTaskName, labels: cvatLabels })
     });
+    setCvatCreating(false);
     if (res?.status === 'ok') {
       alert(`✓ Tarea "${res.task_name}" creada en CVAT con ${res.frames_uploaded} frames`);
       setShowCvatForm(false); setCvatTaskName('');
@@ -638,7 +641,7 @@ function VideosPage() {
               <div className="form-group"><label>Labels (separados por coma)</label><input placeholder="caixabank_valla, caixabank_camiseta" onChange={e => setCvatLabels(e.target.value.split(',').map(s => s.trim()).filter(Boolean))} /></div>
             </div>
             <div className="form-actions">
-              <button className="btn-primary btn-sm" onClick={createCvatTask}>Crear y subir frames</button>
+              <button className="btn-primary btn-sm" onClick={createCvatTask} disabled={cvatCreating}>{cvatCreating ? '⏳ Creando tarea y subiendo frames...' : 'Crear y subir frames'}</button>
               <button className="btn-secondary btn-sm" onClick={() => setShowCvatForm(false)}>Cancelar</button>
             </div>
           </div>
@@ -661,7 +664,7 @@ function VideosPage() {
               <div className="frame-check" onClick={() => toggleFrame(f.name)}>
                 <input type="checkbox" checked={selectedFrames.has(f.name)} readOnly />
               </div>
-              <img src={f.url} alt={f.name} loading="lazy" onClick={() => toggleFrame(f.name)} />
+              <img src={f.thumb_url || f.url} alt={f.name} loading="lazy" onClick={() => toggleFrame(f.name)} />
               <div className="frame-footer">
                 <span className="frame-name">{f.name}</span>
                 <button className="btn-icon-sm" onClick={() => deleteSingleFrame(viewingFrames, f.name)} title="Eliminar">✕</button>

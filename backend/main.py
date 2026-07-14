@@ -841,16 +841,34 @@ def get_extraction_status(filename: str, user: User = Depends(get_current_user))
 
 @app.get("/api/frames/{folder}")
 def list_frames(folder: str, page: int = 1, per_page: int = 20, user: User = Depends(get_current_user)):
-    """Lista frames extraídos con paginación"""
+    """Lista frames extraídos con paginación y thumbnails"""
     frames_path = os.path.join(FRAMES_DIR, folder)
     if not os.path.isdir(frames_path):
         raise HTTPException(404, "Carpeta de frames no encontrada")
 
-    all_frames = sorted([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    all_frames = sorted([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg')) and 'thumbs' not in f])
     total = len(all_frames)
     start = (page - 1) * per_page
     end = start + per_page
     page_frames = all_frames[start:end]
+
+    # Auto-generate thumbs for this page if missing
+    thumb_dir = os.path.join(frames_path, "thumbs")
+    os.makedirs(thumb_dir, exist_ok=True)
+    for f in page_frames:
+        thumb_name = f.rsplit('.', 1)[0] + '.jpg'
+        thumb_path = os.path.join(thumb_dir, thumb_name)
+        if not os.path.exists(thumb_path):
+            try:
+                import cv2
+                img = cv2.imread(os.path.join(frames_path, f))
+                if img is not None:
+                    h, w = img.shape[:2]
+                    new_w, new_h = 320, int(320 * h / w)
+                    img = cv2.resize(img, (new_w, new_h))
+                    cv2.imwrite(thumb_path, img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            except Exception:
+                pass
 
     return {
         "folder": folder,
@@ -858,12 +876,29 @@ def list_frames(folder: str, page: int = 1, per_page: int = 20, user: User = Dep
         "page": page,
         "per_page": per_page,
         "total_pages": math.ceil(total / per_page) if total > 0 else 0,
-        "frames": [{"name": f, "url": f"/api/frames/{folder}/{f}"} for f in page_frames],
+        "frames": [{
+            "name": f,
+            "url": f"/api/frames/{folder}/{f}",
+            "thumb_url": f"/api/frames/{folder}/thumbs/{f.rsplit('.', 1)[0]}.jpg",
+        } for f in page_frames],
     }
 
 
 from fastapi.responses import FileResponse
 import math
+
+@app.get("/api/frames/{folder}/thumbs/{thumb_name}")
+def get_frame_thumb(folder: str, thumb_name: str):
+    """Sirve un thumbnail de frame"""
+    filepath = os.path.join(FRAMES_DIR, folder, "thumbs", thumb_name)
+    if not os.path.exists(filepath):
+        # Fallback to original
+        orig = thumb_name.rsplit('.', 1)[0] + '.png'
+        filepath = os.path.join(FRAMES_DIR, folder, orig)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Thumb no encontrado")
+    return FileResponse(filepath)
+
 
 @app.get("/api/frames/{folder}/{frame_name}")
 def get_frame_image(folder: str, frame_name: str):
@@ -907,12 +942,12 @@ class CreateCvatTaskRequest(BaseModel):
 
 @app.post("/api/frames/{folder}/create-cvat-task")
 async def create_cvat_task_from_frames(folder: str, data: CreateCvatTaskRequest, user: User = Depends(get_current_user)):
-    """Crea una tarea en CVAT y sube los frames directamente (servidor a servidor)"""
+    """Crea una tarea en CVAT y sube los frames directamente (servidor a servidor via ZIP)"""
     frames_path = os.path.join(FRAMES_DIR, folder)
     if not os.path.isdir(frames_path):
         raise HTTPException(404, "Carpeta de frames no encontrada")
 
-    frame_files = sorted([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    frame_files = sorted([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg')) and f != 'thumbs'])
     if not frame_files:
         return {"status": "error", "message": "No hay frames en la carpeta"}
 
@@ -949,28 +984,29 @@ async def create_cvat_task_from_frames(folder: str, data: CreateCvatTaskRequest,
                 return {"status": "error", "message": f"Error creando tarea: {resp.text[:200]}"}
             task_id = resp.json()["id"]
 
-        # 3. Upload frames in chunks (server to server)
-        import io
-        CHUNK_SIZE = 50  # frames per chunk
+        # 3. Create ZIP of all frames
+        import zipfile, io, tempfile
+        zip_path = os.path.join(tempfile.gettempdir(), f"cvat_upload_{folder}.zip")
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
+            for fname in frame_files:
+                fpath = os.path.join(frames_path, fname)
+                zf.write(fpath, fname)
 
-        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=300, headers=auth_headers) as client:
-            for chunk_start in range(0, len(frame_files), CHUNK_SIZE):
-                chunk = frame_files[chunk_start:chunk_start + CHUNK_SIZE]
-                files = []
-                for fname in chunk:
-                    fpath = os.path.join(frames_path, fname)
-                    with open(fpath, "rb") as f:
-                        files.append(("client_files[]", (fname, f.read(), "image/png")))
+        # 4. Upload ZIP to CVAT (single request)
+        with open(zip_path, "rb") as zf:
+            zip_data = zf.read()
 
-                upload_data = {"image_quality": 70}
-                if chunk_start == 0:
-                    upload_data["use_zip_chunks"] = "true"
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=600, headers=auth_headers) as client:
+            resp = await client.post(
+                f"/api/tasks/{task_id}/data",
+                data={"image_quality": 70},
+                files={"client_files[0]": (f"{folder}.zip", zip_data, "application/zip")},
+            )
+            if resp.status_code not in (200, 201, 202):
+                return {"status": "error", "message": f"Error subiendo frames: {resp.status_code} {resp.text[:200]}"}
 
-                resp = await client.post(
-                    f"/api/tasks/{task_id}/data",
-                    data=upload_data,
-                    files=files,
-                )
+        # 5. Cleanup
+        os.remove(zip_path)
 
         return {
             "status": "ok",
