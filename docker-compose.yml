@@ -88,13 +88,13 @@ services:
     restart: unless-stopped
 
   geca_mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.22.0
+    image: python:3.11-slim
     container_name: geca_mlflow
     ports:
       - "5000:5000"
     volumes:
       - mlflow_data:/mlflow
-    entrypoint: ["sh", "-c", "mkdir -p /mlflow/artifacts && mlflow server --host 0.0.0.0 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts"]
+    entrypoint: ["sh", "-c", "pip install mlflow==2.18.0 && mkdir -p /mlflow/artifacts && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts --gunicorn-opts '--timeout 120 --workers 1'"]
     restart: unless-stopped
 
 volumes:
