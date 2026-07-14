@@ -1487,8 +1487,9 @@ class CreateDatasetRequest(BaseModel):
     name: str
     sources: list[str] = []
     tag: str = ""
-    train_pct: float = 80.0
+    train_pct: float = 70.0
     val_pct: float = 20.0
+    test_pct: float = 10.0
 
 
 @app.post("/api/datasets/import-cvat/{task_id}")
@@ -1762,7 +1763,7 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
         shutil.rmtree(ready_dir)
 
     # Create structure
-    for split in ["train", "val"]:
+    for split in ["train", "val", "test"]:
         os.makedirs(os.path.join(ready_dir, "images", split), exist_ok=True)
         os.makedirs(os.path.join(ready_dir, "labels", split), exist_ok=True)
 
@@ -1799,14 +1800,16 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
     if not all_pairs:
         return {"status": "error", "message": "No hay imagenes en los sources seleccionados"}
 
-    # Shuffle and split
+    # Shuffle and split into train/val/test
     random.shuffle(all_pairs)
     train_count = int(len(all_pairs) * data.train_pct / 100)
+    val_count = int(len(all_pairs) * data.val_pct / 100)
     train_pairs = all_pairs[:train_count]
-    val_pairs = all_pairs[train_count:]
+    val_pairs = all_pairs[train_count:train_count + val_count]
+    test_pairs = all_pairs[train_count + val_count:]
 
     # Copy files
-    for pairs, split in [(train_pairs, "train"), (val_pairs, "val")]:
+    for pairs, split in [(train_pairs, "train"), (val_pairs, "val"), (test_pairs, "test")]:
         for img_path, lbl_path, unique_name in pairs:
             ext = img_path.rsplit('.', 1)[1]
             base_name = unique_name.rsplit('.', 1)[0]
@@ -1821,6 +1824,7 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
         "path": ".",
         "train": "images/train",
         "val": "images/val",
+        "test": "images/test",
         "names": {i: name for i, name in enumerate(all_class_names)},
         "nc": len(all_class_names),
     }
@@ -1836,8 +1840,10 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
         "sources": data.sources,
         "train_pct": data.train_pct,
         "val_pct": data.val_pct,
+        "test_pct": data.test_pct,
         "train_images": len(train_pairs),
         "val_images": len(val_pairs),
+        "test_images": len(test_pairs),
         "total_images": len(all_pairs),
         "class_names": all_class_names,
         "num_classes": len(all_class_names),

@@ -146,7 +146,8 @@ function DatasetsPage() {
   const [createName, setCreateName] = useState('');
   const [createTag, setCreateTag] = useState('');
   const [createSources, setCreateSources] = useState([]);
-  const [trainPct, setTrainPct] = useState(80);
+  const [trainPct, setTrainPct] = useState(70);
+  const [valPct, setValPct] = useState(20);
   const [creating, setCreating] = useState(false);
   const [viewStats, setViewStats] = useState(null);
   const [stats, setStats] = useState(null);
@@ -188,11 +189,11 @@ function DatasetsPage() {
     setCreating(true);
     const r = await api('/api/datasets/create', {
       method: 'POST',
-      body: JSON.stringify({ name: createName, sources: createSources, tag: createTag, train_pct: trainPct, val_pct: 100 - trainPct })
+      body: JSON.stringify({ name: createName, sources: createSources, tag: createTag, train_pct: trainPct, val_pct: valPct, test_pct: 100 - trainPct - valPct })
     });
     setCreating(false);
     if (r?.status === 'ok') {
-      alert(`✓ Dataset "${r.name}" creado: ${r.train_images} train, ${r.val_images} val, ${r.num_classes} clases`);
+      alert(`✓ Dataset "${r.name}" creado: ${r.train_images} train, ${r.val_images} val, ${r.test_images} test, ${r.num_classes} clases`);
       setShowCreate(false); setCreateName(''); setCreateSources([]); setCreateTag('');
       load();
     } else {
@@ -261,9 +262,16 @@ function DatasetsPage() {
           <div className="form-row">
             <div className="form-group"><label>Nombre</label><input placeholder="tenis_v1" value={createName} onChange={e => setCreateName(e.target.value)} /></div>
             <div className="form-group"><label>Etiqueta</label><input placeholder="tenis, futbol..." value={createTag} onChange={e => setCreateTag(e.target.value)} /></div>
-            <div className="form-group" style={{maxWidth: 180}}>
-              <label>Train: {trainPct}% / Val: {100 - trainPct}%</label>
-              <input type="range" min={50} max={95} step={5} value={trainPct} onChange={e => setTrainPct(parseInt(e.target.value))} />
+            <div className="form-group" style={{maxWidth: 300}}>
+              <label>Train: {trainPct}% / Val: {valPct}% / Test: {100 - trainPct - valPct}%</label>
+              <div style={{display:'flex', gap: 8, alignItems: 'center', fontSize: 11, color: '#9898b0'}}>
+                <span>Train</span>
+                <input type="range" min={50} max={90} step={5} value={trainPct} onChange={e => { const v = parseInt(e.target.value); setTrainPct(v); if (v + valPct > 95) setValPct(95 - v); }} style={{flex: 1}} />
+              </div>
+              <div style={{display:'flex', gap: 8, alignItems: 'center', fontSize: 11, color: '#9898b0'}}>
+                <span>Val</span>
+                <input type="range" min={5} max={40} step={5} value={valPct} onChange={e => { const v = parseInt(e.target.value); if (trainPct + v <= 95) setValPct(v); }} style={{flex: 1}} />
+              </div>
             </div>
           </div>
           <div className="form-group"><label>Selecciona sources a combinar:</label></div>
@@ -296,11 +304,12 @@ function DatasetsPage() {
                 <span>{d.total_images || 0} imágenes</span><span>·</span>
                 <span>{d.train_images || 0} train</span><span>·</span>
                 <span>{d.val_images || 0} val</span><span>·</span>
+                <span>{d.test_images || 0} test</span><span>·</span>
                 <span>{d.num_classes || 0} clases</span>
               </div>
             </div>
             <button className="btn-sm btn-secondary" onClick={() => loadStats('ready', d.folder)}>📊 Stats</button>
-            <button className="btn-sm btn-danger" onClick={() => deleteDataset('ready', d.folder)}>✕</button>
+            <button className="btn-sm btn-danger" onClick={() => deleteDataset('ready', d.folder)}>🗑 Eliminar</button>
           </div>
           <div className="video-meta" style={{marginTop: 6}}>
             <span>Jupyter: <code style={{fontSize: 11}}>{d.jupyter_yaml || d.data_yaml}</code></span>
