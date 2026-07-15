@@ -150,16 +150,34 @@ function ResultsPage() {
   };
   useEffect(load, []);
 
-  const videos = results.filter(r => r.type === 'mp4');
-  const excels = results.filter(r => r.type === 'xlsx');
-  const images = results.filter(r => ['png', 'jpg'].includes(r.type));
+  // Group by video name
+  const grouped = {};
+  const general = [];
+  results.forEach(r => {
+    // Extract video name: Bu_Bublik_v2_metrics.xlsx → Bu_Bublik_v2
+    const name = r.name;
+    let videoName = null;
+    if (name.includes('_metrics.')) videoName = name.replace(/_metrics\.\w+$/, '');
+    else if (name.includes('_anotado_')) videoName = name.replace(/_anotado_\d+p\.mp4$/, '');
+    else if (name.includes('_presencia.')) videoName = name.replace(/_presencia\.\w+$/, '');
+    else if (name.includes('_muestras.')) videoName = name.replace(/_muestras\.\w+$/, '');
+
+    if (videoName) {
+      if (!grouped[videoName]) grouped[videoName] = { videos: [], excels: [], images: [] };
+      if (r.type === 'mp4') grouped[videoName].videos.push(r);
+      else if (r.type === 'xlsx') grouped[videoName].excels.push(r);
+      else if (['png', 'jpg'].includes(r.type)) grouped[videoName].images.push(r);
+    } else {
+      general.push(r);
+    }
+  });
 
   if (loading) return <div className="page"><div className="loading">Cargando resultados...</div></div>;
 
   return (
     <div className="page">
       <div className="page-header">
-        <div><h1>Resultados</h1><p>Videos procesados, métricas Excel y gráficos</p></div>
+        <div><h1>Resultados</h1><p>Videos procesados, métricas y gráficos agrupados por video</p></div>
         <button className="btn-secondary" onClick={load}>↻ Actualizar</button>
       </div>
 
@@ -170,56 +188,64 @@ function ResultsPage() {
             <h3>▶ {playing}</h3>
             <button className="btn-sm btn-secondary" onClick={() => setPlaying(null)}>✕ Cerrar</button>
           </div>
-          <video
-            controls autoPlay
-            style={{width: '100%', maxHeight: '70vh', borderRadius: 8, backgroundColor: '#000'}}
-            src={`/api/results/${encodeURIComponent(playing)}/stream`}
-          />
+          <video controls autoPlay style={{width: '100%', maxHeight: '70vh', borderRadius: 8, backgroundColor: '#000'}}
+            src={`/api/results/${encodeURIComponent(playing)}/stream`} />
         </div>
       )}
 
-      {/* VIDEOS */}
-      <h2 style={{fontSize: 16, marginBottom: 12, color: '#6c5ce7'}}>Videos Anotados</h2>
-      {videos.length > 0 ? videos.map(v => (
-        <div className="card" key={v.name} style={{marginBottom: 8}}>
-          <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
-            <div style={{flex: 1}}>
-              <h4>{v.name}</h4>
-              <div className="video-meta"><span>{v.size_mb} MB</span></div>
-            </div>
-            <button className="btn-sm btn-primary" onClick={() => setPlaying(v.name)}>▶ Reproducir</button>
-          </div>
-        </div>
-      )) : <p className="empty-text" style={{marginBottom: 20}}>Genera videos anotados desde el notebook de Video Anotado</p>}
+      {/* GROUPED BY VIDEO */}
+      {Object.keys(grouped).length > 0 ? Object.entries(grouped).map(([videoName, g]) => (
+        <div key={videoName} className="card" style={{marginBottom: 16}}>
+          <h3 style={{color: '#6c5ce7', marginBottom: 12}}>📹 {videoName}</h3>
 
-      {/* EXCEL */}
-      <h2 style={{fontSize: 16, marginBottom: 12, marginTop: 24, color: '#00b894'}}>Métricas Excel</h2>
-      {excels.length > 0 ? excels.map(e => (
-        <div className="card" key={e.name} style={{marginBottom: 8}}>
-          <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
-            <div style={{flex: 1}}>
-              <h4>{e.name}</h4>
-              <div className="video-meta"><span>{e.size_mb} MB</span></div>
+          {/* Video */}
+          {g.videos.map(v => (
+            <div key={v.name} style={{display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, padding: '8px 0', borderBottom: '1px solid #2a2a3a'}}>
+              <span style={{fontSize: 13, flex: 1}}>🎬 {v.name} <span style={{color: '#9898b0'}}>({v.size_mb} MB)</span></span>
+              <button className="btn-sm btn-primary" onClick={() => setPlaying(v.name)}>▶ Reproducir</button>
             </div>
-            <a href={`/api/results/${encodeURIComponent(e.name)}/stream`} download={e.name} className="btn-sm btn-secondary">⬇ Descargar</a>
-          </div>
-        </div>
-      )) : <p className="empty-text" style={{marginBottom: 20}}>Genera métricas desde el notebook de Inferencia</p>}
+          ))}
 
-      {/* IMAGES */}
-      {images.length > 0 && (<>
-        <h2 style={{fontSize: 16, marginBottom: 12, marginTop: 24, color: '#e17055'}}>Gráficos</h2>
-        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: 12}}>
-          {images.map(img => (
-            <div className="card" key={img.name} style={{padding: 8}}>
-              <img src={`/api/results/${encodeURIComponent(img.name)}/stream`} alt={img.name} style={{width: '100%', borderRadius: 6}} />
-              <p style={{textAlign: 'center', fontSize: 12, marginTop: 4, color: '#9898b0'}}>{img.name}</p>
+          {/* Excel */}
+          {g.excels.map(e => (
+            <div key={e.name} style={{display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, padding: '8px 0', borderBottom: '1px solid #2a2a3a'}}>
+              <span style={{fontSize: 13, flex: 1}}>📊 {e.name} <span style={{color: '#9898b0'}}>({e.size_mb} MB)</span></span>
+              <a href={`/api/results/${encodeURIComponent(e.name)}/stream`} download={e.name} className="btn-sm btn-secondary">⬇ Descargar</a>
+            </div>
+          ))}
+
+          {/* Images */}
+          {g.images.length > 0 && (
+            <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: 10, marginTop: 8}}>
+              {g.images.map(img => (
+                <div key={img.name} style={{borderRadius: 6, overflow: 'hidden', border: '1px solid #2a2a3a'}}>
+                  <img src={`/api/results/${encodeURIComponent(img.name)}/stream`} alt={img.name} style={{width: '100%', display: 'block'}} />
+                  <p style={{textAlign: 'center', fontSize: 11, padding: '4px', color: '#9898b0', margin: 0}}>{img.name}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )) : <p className="empty-text">No hay resultados. Ejecuta los notebooks de Inferencia o Video Anotado en Jupyter.</p>}
+
+      {/* GENERAL (comparaciones, etc) */}
+      {general.length > 0 && (
+        <div className="card" style={{marginTop: 16}}>
+          <h3 style={{color: '#e17055', marginBottom: 12}}>📈 General</h3>
+          {general.filter(g => ['png','jpg'].includes(g.type)).map(img => (
+            <div key={img.name} style={{marginBottom: 8}}>
+              <img src={`/api/results/${encodeURIComponent(img.name)}/stream`} alt={img.name} style={{width: '100%', maxWidth: 800, borderRadius: 6}} />
+              <p style={{fontSize: 11, color: '#9898b0'}}>{img.name}</p>
+            </div>
+          ))}
+          {general.filter(g => !['png','jpg'].includes(g.type)).map(f => (
+            <div key={f.name} style={{display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8}}>
+              <span style={{fontSize: 13, flex: 1}}>{f.name} ({f.size_mb} MB)</span>
+              <a href={`/api/results/${encodeURIComponent(f.name)}/stream`} download={f.name} className="btn-sm btn-secondary">⬇ Descargar</a>
             </div>
           ))}
         </div>
-      </>)}
-
-      {results.length === 0 && <p className="empty-text">No hay resultados. Ejecuta los notebooks de Inferencia o Video Anotado en Jupyter.</p>}
+      )}
     </div>
   );
 }
