@@ -77,6 +77,7 @@ services:
       - jupyter_notebooks:/home/jovyan/work
     environment:
       MLFLOW_TRACKING_URI: http://geca_mlflow:5000
+      MLFLOW_ARTIFACT_ROOT: /home/jovyan/shared/mlflow/artifacts
     command: start-notebook.py --NotebookApp.token='geca2026' --notebook-dir=/home/jovyan
     deploy:
       resources:
@@ -93,15 +94,14 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - mlflow_data:/mlflow
-    entrypoint: ["sh", "-c", "pip install mlflow==2.18.0 && mkdir -p /mlflow/artifacts && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts --gunicorn-opts '--timeout 120 --workers 1'"]
+      - /mnt/shared/mlflow:/mlflow
+    entrypoint: ["sh", "-c", "pip install mlflow==2.18.0 && mkdir -p /mlflow/artifacts && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root mlflow-artifacts:/artifacts --artifacts-destination /mlflow/artifacts --gunicorn-opts '--timeout 120 --workers 1'"]
     restart: unless-stopped
 
 volumes:
   geca_db_data:
   whisper_models:
   jupyter_notebooks:
-  mlflow_data:
 
 networks:
   default:

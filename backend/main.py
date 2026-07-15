@@ -5,7 +5,7 @@ Integración con CVAT para consulta de datasets.
 Credenciales CVAT configurables desde la app.
 """
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Boolean, Text
@@ -884,7 +884,7 @@ def list_frames(folder: str, page: int = 1, per_page: int = 20, user: User = Dep
     }
 
 
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 import math
 
 @app.get("/api/frames/{folder}/thumbs/{thumb_name}")
@@ -1889,3 +1889,87 @@ def list_models(user: User = Depends(get_current_user)):
                     "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                 })
     return {"models": models, "path": MODELS_DIR}
+
+
+# ==============================================
+#  VIDEO RESULTS (Streaming)
+# ==============================================
+
+RESULTS_DIR = os.getenv("RESULTS_DIR", "/mnt/shared/results")
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
+
+@app.get("/api/results")
+def list_results(user: User = Depends(get_current_user)):
+    """List processed video results"""
+    results = []
+    if os.path.isdir(RESULTS_DIR):
+        for f in sorted(os.listdir(RESULTS_DIR)):
+            fpath = os.path.join(RESULTS_DIR, f)
+            stat = os.stat(fpath)
+            size_mb = stat.st_size / 1_000_000
+            ext = f.rsplit(".", 1)[-1].lower() if "." in f else ""
+            results.append({
+                "name": f,
+                "size_mb": round(size_mb, 1),
+                "type": ext,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+    return {"results": results}
+
+
+@app.get("/api/results/{filename}/stream")
+async def stream_video(filename: str, request: Request):
+    """Stream video with HTTP range support for seeking"""
+    filepath = os.path.join(RESULTS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(404, "Video no encontrado")
+
+    file_size = os.path.getsize(filepath)
+    content_type = "video/mp4"
+
+    range_header = request.headers.get("range")
+    if range_header:
+        # Parse range: bytes=START-END
+        range_str = range_header.replace("bytes=", "")
+        parts = range_str.split("-")
+        start = int(parts[0])
+        end = int(parts[1]) if parts[1] else min(start + 5_000_000, file_size - 1)
+        end = min(end, file_size - 1)
+        length = end - start + 1
+
+        def iter_range():
+            with open(filepath, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            iter_range(),
+            status_code=206,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(length),
+                "Content-Type": content_type,
+            },
+        )
+    else:
+        def iter_file():
+            with open(filepath, "rb") as f:
+                while chunk := f.read(65536):
+                    yield chunk
+
+        return StreamingResponse(
+            iter_file(),
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+                "Content-Type": content_type,
+            },
+        )

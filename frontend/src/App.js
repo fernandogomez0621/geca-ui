@@ -51,7 +51,7 @@ function LoginPage() {
 // === LAYOUT ===
 function Layout({ children }) {
   const { user, logout } = useAuth(); const location = useLocation();
-  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/datasets', label: 'Datasets', icon: '◫' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
+  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/datasets', label: 'Datasets', icon: '◫' }, { path: '/results', label: 'Resultados', icon: '◉' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
   if (user?.role === 'admin') navItems.push({ path: '/users', label: 'Usuarios', icon: '◇' });
   return (
     <div className="app-layout">
@@ -131,6 +131,95 @@ function ContextsPage() {
     <div className="page"><div className="page-header"><div><h1>Contextos</h1><p>Superficies donde aparecen las marcas</p></div><button className="btn-primary" onClick={() => setShowForm(!showForm)}>+ Nuevo Contexto</button></div>
       {showForm && (<div className="card form-card"><h3>Nuevo Contexto</h3><form onSubmit={create}><div className="form-row"><div className="form-group" style={{maxWidth: 80}}><label>Icono</label><input placeholder="👕" value={form.icon} onChange={e => setForm({...form, icon: e.target.value})} /></div><div className="form-group"><label>Nombre</label><input placeholder="camiseta" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div><div className="form-group" style={{flex: 2}}><label>Descripción</label><input placeholder="Logo en camiseta de jugador" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div></div><div className="form-actions"><button type="submit" className="btn-primary">Crear</button><button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancelar</button></div></form></div>)}
       <div className="contexts-grid">{contexts.map(ctx => (<div className="card context-card" key={ctx.id}><div className="context-icon">{ctx.icon || '▦'}</div><h3>{ctx.name}</h3><p>{ctx.description || 'Sin descripción'}</p><button className="btn-icon btn-danger-icon" onClick={() => remove(ctx.id)}>✕</button></div>))}</div>
+    </div>
+  );
+}
+
+// === RESULTS PAGE (Video Viewer) ===
+function ResultsPage() {
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [playing, setPlaying] = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    api('/api/results').then(r => {
+      if (r) setResults(r.results || []);
+      setLoading(false);
+    });
+  };
+  useEffect(load, []);
+
+  const videos = results.filter(r => r.type === 'mp4');
+  const excels = results.filter(r => r.type === 'xlsx');
+  const images = results.filter(r => ['png', 'jpg'].includes(r.type));
+
+  if (loading) return <div className="page"><div className="loading">Cargando resultados...</div></div>;
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <div><h1>Resultados</h1><p>Videos procesados, métricas Excel y gráficos</p></div>
+        <button className="btn-secondary" onClick={load}>↻ Actualizar</button>
+      </div>
+
+      {/* VIDEO PLAYER */}
+      {playing && (
+        <div className="card" style={{marginBottom: 16}}>
+          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12}}>
+            <h3>▶ {playing}</h3>
+            <button className="btn-sm btn-secondary" onClick={() => setPlaying(null)}>✕ Cerrar</button>
+          </div>
+          <video
+            controls autoPlay
+            style={{width: '100%', maxHeight: '70vh', borderRadius: 8, backgroundColor: '#000'}}
+            src={`/api/results/${encodeURIComponent(playing)}/stream`}
+          />
+        </div>
+      )}
+
+      {/* VIDEOS */}
+      <h2 style={{fontSize: 16, marginBottom: 12, color: '#6c5ce7'}}>Videos Anotados</h2>
+      {videos.length > 0 ? videos.map(v => (
+        <div className="card" key={v.name} style={{marginBottom: 8}}>
+          <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
+            <div style={{flex: 1}}>
+              <h4>{v.name}</h4>
+              <div className="video-meta"><span>{v.size_mb} MB</span></div>
+            </div>
+            <button className="btn-sm btn-primary" onClick={() => setPlaying(v.name)}>▶ Reproducir</button>
+          </div>
+        </div>
+      )) : <p className="empty-text" style={{marginBottom: 20}}>Genera videos anotados desde el notebook de Video Anotado</p>}
+
+      {/* EXCEL */}
+      <h2 style={{fontSize: 16, marginBottom: 12, marginTop: 24, color: '#00b894'}}>Métricas Excel</h2>
+      {excels.length > 0 ? excels.map(e => (
+        <div className="card" key={e.name} style={{marginBottom: 8}}>
+          <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
+            <div style={{flex: 1}}>
+              <h4>{e.name}</h4>
+              <div className="video-meta"><span>{e.size_mb} MB</span></div>
+            </div>
+            <a href={`/api/results/${encodeURIComponent(e.name)}/stream`} download={e.name} className="btn-sm btn-secondary">⬇ Descargar</a>
+          </div>
+        </div>
+      )) : <p className="empty-text" style={{marginBottom: 20}}>Genera métricas desde el notebook de Inferencia</p>}
+
+      {/* IMAGES */}
+      {images.length > 0 && (<>
+        <h2 style={{fontSize: 16, marginBottom: 12, marginTop: 24, color: '#e17055'}}>Gráficos</h2>
+        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: 12}}>
+          {images.map(img => (
+            <div className="card" key={img.name} style={{padding: 8}}>
+              <img src={`/api/results/${encodeURIComponent(img.name)}/stream`} alt={img.name} style={{width: '100%', borderRadius: 6}} />
+              <p style={{textAlign: 'center', fontSize: 12, marginTop: 4, color: '#9898b0'}}>{img.name}</p>
+            </div>
+          ))}
+        </div>
+      </>)}
+
+      {results.length === 0 && <p className="empty-text">No hay resultados. Ejecuta los notebooks de Inferencia o Video Anotado en Jupyter.</p>}
     </div>
   );
 }
@@ -1069,6 +1158,7 @@ function App() {
       <Route path="/contexts" element={<ProtectedRoute><ContextsPage /></ProtectedRoute>} />
       <Route path="/videos" element={<ProtectedRoute><VideosPage /></ProtectedRoute>} />
       <Route path="/datasets" element={<ProtectedRoute><DatasetsPage /></ProtectedRoute>} />
+      <Route path="/results" element={<ProtectedRoute><ResultsPage /></ProtectedRoute>} />
       <Route path="/cvat" element={<ProtectedRoute><CVATPage /></ProtectedRoute>} />
       <Route path="/users" element={<ProtectedRoute><UsersPage /></ProtectedRoute>} />
     </Routes></AuthProvider></BrowserRouter>
