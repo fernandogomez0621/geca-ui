@@ -1823,9 +1823,10 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
             if os.path.exists(lbl_path):
                 shutil.copy2(lbl_path, dst_lbl)
 
-    # Create data.yaml (use "." as path so it works from any mount point)
+    # Create data.yaml (use absolute Jupyter path for training)
+    jupyter_ready_dir = ready_dir.replace("/mnt/shared", "/home/jovyan/shared")
     yaml_content = {
-        "path": ".",
+        "path": jupyter_ready_dir,
         "train": "images/train",
         "val": "images/val",
         "test": "images/test",
