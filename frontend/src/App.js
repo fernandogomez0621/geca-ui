@@ -140,6 +140,7 @@ function ResultsPage() {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState(null);
+  const [viewingImage, setViewingImage] = useState(null);
 
   const load = () => {
     setLoading(true);
@@ -154,7 +155,6 @@ function ResultsPage() {
   const grouped = {};
   const general = [];
   results.forEach(r => {
-    // Extract video name: Bu_Bublik_v2_metrics.xlsx → Bu_Bublik_v2
     const name = r.name;
     let videoName = null;
     if (name.includes('_metrics.')) videoName = name.replace(/_metrics\.\w+$/, '');
@@ -167,7 +167,7 @@ function ResultsPage() {
       if (r.type === 'mp4') grouped[videoName].videos.push(r);
       else if (r.type === 'xlsx') grouped[videoName].excels.push(r);
       else if (['png', 'jpg'].includes(r.type)) grouped[videoName].images.push(r);
-    } else {
+    } else if (['png', 'jpg'].includes(r.type)) {
       general.push(r);
     }
   });
@@ -177,9 +177,19 @@ function ResultsPage() {
   return (
     <div className="page">
       <div className="page-header">
-        <div><h1>Resultados</h1><p>Videos procesados, métricas y gráficos agrupados por video</p></div>
+        <div><h1>Resultados</h1><p>Videos procesados y métricas por video</p></div>
         <button className="btn-secondary" onClick={load}>↻ Actualizar</button>
       </div>
+
+      {/* IMAGE MODAL */}
+      {viewingImage && (
+        <div onClick={() => setViewingImage(null)} style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 20}}>
+          <div style={{position: 'relative', maxWidth: '95vw', maxHeight: '95vh'}}>
+            <img src={`/api/results/${encodeURIComponent(viewingImage)}/stream`} alt={viewingImage} style={{maxWidth: '95vw', maxHeight: '90vh', borderRadius: 8}} />
+            <p style={{textAlign: 'center', color: '#ccc', marginTop: 8, fontSize: 13}}>{viewingImage} — Click para cerrar</p>
+          </div>
+        </div>
+      )}
 
       {/* VIDEO PLAYER */}
       {playing && (
@@ -195,55 +205,51 @@ function ResultsPage() {
 
       {/* GROUPED BY VIDEO */}
       {Object.keys(grouped).length > 0 ? Object.entries(grouped).map(([videoName, g]) => (
-        <div key={videoName} className="card" style={{marginBottom: 16}}>
+        <div key={videoName} className="card" style={{marginBottom: 12}}>
           <h3 style={{color: '#6c5ce7', marginBottom: 12}}>📹 {videoName}</h3>
-
-          {/* Video */}
           {g.videos.map(v => (
             <div key={v.name} style={{display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, padding: '8px 0', borderBottom: '1px solid #2a2a3a'}}>
-              <span style={{fontSize: 13, flex: 1}}>🎬 {v.name} <span style={{color: '#9898b0'}}>({v.size_mb} MB)</span></span>
+              <span style={{fontSize: 13, flex: 1}}>🎬 Video anotado <span style={{color: '#9898b0'}}>({v.size_mb} MB)</span></span>
               <button className="btn-sm btn-primary" onClick={() => setPlaying(v.name)}>▶ Reproducir</button>
             </div>
           ))}
-
-          {/* Excel */}
           {g.excels.map(e => (
             <div key={e.name} style={{display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, padding: '8px 0', borderBottom: '1px solid #2a2a3a'}}>
-              <span style={{fontSize: 13, flex: 1}}>📊 {e.name} <span style={{color: '#9898b0'}}>({e.size_mb} MB)</span></span>
+              <span style={{fontSize: 13, flex: 1}}>📊 Métricas Excel <span style={{color: '#9898b0'}}>({e.size_mb} MB)</span></span>
               <a href={`/api/results/${encodeURIComponent(e.name)}/stream`} download={e.name} className="btn-sm btn-secondary">⬇ Descargar</a>
             </div>
           ))}
-
-          {/* Images */}
           {g.images.length > 0 && (
-            <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: 10, marginTop: 8}}>
+            <div style={{display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap'}}>
               {g.images.map(img => (
-                <div key={img.name} style={{borderRadius: 6, overflow: 'hidden', border: '1px solid #2a2a3a'}}>
+                <div key={img.name} onClick={() => setViewingImage(img.name)}
+                  style={{width: 120, cursor: 'pointer', borderRadius: 6, overflow: 'hidden', border: '1px solid #2a2a3a', transition: 'border-color 0.2s'}}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = '#6c5ce7'}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = '#2a2a3a'}>
                   <img src={`/api/results/${encodeURIComponent(img.name)}/stream`} alt={img.name} style={{width: '100%', display: 'block'}} />
-                  <p style={{textAlign: 'center', fontSize: 11, padding: '4px', color: '#9898b0', margin: 0}}>{img.name}</p>
+                  <p style={{fontSize: 9, textAlign: 'center', color: '#9898b0', margin: '2px 0', padding: '0 2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{img.name.replace(videoName + '_', '')}</p>
                 </div>
               ))}
             </div>
           )}
         </div>
-      )) : <p className="empty-text">No hay resultados. Ejecuta los notebooks de Inferencia o Video Anotado en Jupyter.</p>}
+      )) : <p className="empty-text">No hay resultados. Ejecuta los notebooks en Jupyter.</p>}
 
-      {/* GENERAL (comparaciones, etc) */}
+      {/* GENERAL images */}
       {general.length > 0 && (
-        <div className="card" style={{marginTop: 16}}>
+        <div className="card" style={{marginTop: 12}}>
           <h3 style={{color: '#e17055', marginBottom: 12}}>📈 General</h3>
-          {general.filter(g => ['png','jpg'].includes(g.type)).map(img => (
-            <div key={img.name} style={{marginBottom: 8}}>
-              <img src={`/api/results/${encodeURIComponent(img.name)}/stream`} alt={img.name} style={{width: '100%', maxWidth: 800, borderRadius: 6}} />
-              <p style={{fontSize: 11, color: '#9898b0'}}>{img.name}</p>
-            </div>
-          ))}
-          {general.filter(g => !['png','jpg'].includes(g.type)).map(f => (
-            <div key={f.name} style={{display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8}}>
-              <span style={{fontSize: 13, flex: 1}}>{f.name} ({f.size_mb} MB)</span>
-              <a href={`/api/results/${encodeURIComponent(f.name)}/stream`} download={f.name} className="btn-sm btn-secondary">⬇ Descargar</a>
-            </div>
-          ))}
+          <div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
+            {general.map(img => (
+              <div key={img.name} onClick={() => setViewingImage(img.name)}
+                style={{width: 120, cursor: 'pointer', borderRadius: 6, overflow: 'hidden', border: '1px solid #2a2a3a'}}
+                onMouseEnter={e => e.currentTarget.style.borderColor = '#6c5ce7'}
+                onMouseLeave={e => e.currentTarget.style.borderColor = '#2a2a3a'}>
+                <img src={`/api/results/${encodeURIComponent(img.name)}/stream`} alt={img.name} style={{width: '100%', display: 'block'}} />
+                <p style={{fontSize: 9, textAlign: 'center', color: '#9898b0', margin: '2px 0'}}>{img.name}</p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
