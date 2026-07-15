@@ -1919,18 +1919,22 @@ def list_results(user: User = Depends(get_current_user)):
 
 
 @app.get("/api/results/{filename}/stream")
-async def stream_video(filename: str, request: Request):
-    """Stream video with HTTP range support for seeking"""
+async def stream_result(filename: str, request: Request):
+    """Stream video or serve image/file"""
     filepath = os.path.join(RESULTS_DIR, filename)
     if not os.path.exists(filepath):
-        raise HTTPException(404, "Video no encontrado")
+        raise HTTPException(404, "Archivo no encontrado")
 
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    # Images and small files: direct FileResponse (fast)
+    if ext in ("png", "jpg", "jpeg", "xlsx", "csv"):
+        return FileResponse(filepath)
+
+    # Videos: streaming with range support
     file_size = os.path.getsize(filepath)
-    content_type = "video/mp4"
-
     range_header = request.headers.get("range")
     if range_header:
-        # Parse range: bytes=START-END
         range_str = range_header.replace("bytes=", "")
         parts = range_str.split("-")
         start = int(parts[0])
@@ -1949,27 +1953,15 @@ async def stream_video(filename: str, request: Request):
                     remaining -= len(chunk)
                     yield chunk
 
-        return StreamingResponse(
-            iter_range(),
-            status_code=206,
-            headers={
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(length),
-                "Content-Type": content_type,
-            },
-        )
+        return StreamingResponse(iter_range(), status_code=206, headers={
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes", "Content-Length": str(length), "Content-Type": "video/mp4",
+        })
     else:
         def iter_file():
             with open(filepath, "rb") as f:
                 while chunk := f.read(65536):
                     yield chunk
-
-        return StreamingResponse(
-            iter_file(),
-            headers={
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(file_size),
-                "Content-Type": content_type,
-            },
-        )
+        return StreamingResponse(iter_file(), headers={
+            "Accept-Ranges": "bytes", "Content-Length": str(file_size), "Content-Type": "video/mp4",
+        })
