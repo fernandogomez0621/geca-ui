@@ -1683,26 +1683,11 @@ def list_datasets(user: User = Depends(get_current_user)):
 
 @app.get("/api/datasets/{dtype}/{name}/stats")
 def get_dataset_stats(dtype: str, name: str, user: User = Depends(get_current_user)):
-    """Get dataset statistics: images per class, distribution"""
+    """Get dataset statistics per split"""
     base = os.path.join(DATASETS_DIR, dtype, name)
     if not os.path.isdir(base):
         raise HTTPException(404, "Dataset no encontrado")
 
-    # Find all label files (handle both flat and train/val structures)
-    lbl_dir = os.path.join(base, "labels")
-    label_files = []
-    if os.path.isdir(lbl_dir):
-        # Check for subdirectories (train/val)
-        for sub in ["train", "val", "test"]:
-            sub_dir = os.path.join(lbl_dir, sub)
-            if os.path.isdir(sub_dir):
-                label_files.extend([os.path.join(sub_dir, f) for f in os.listdir(sub_dir) if f.endswith('.txt')])
-        # Also check flat structure
-        flat_files = [os.path.join(lbl_dir, f) for f in os.listdir(lbl_dir) if f.endswith('.txt')]
-        if flat_files and not label_files:
-            label_files = flat_files
-
-    # Read class names
     import json as _json
     class_names = []
     meta_path = os.path.join(base, "meta.json")
@@ -1721,35 +1706,54 @@ def get_dataset_stats(dtype: str, name: str, user: User = Depends(get_current_us
             elif isinstance(names, list):
                 class_names = names
 
-    # Count annotations per class
-    class_counts = {}
-    total_annotations = 0
-    images_with_annotations = 0
+    def count_labels(files):
+        counts = {}
+        total = 0
+        imgs = 0
+        for lf in files:
+            has = False
+            with open(lf) as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        cid = int(parts[0])
+                        cn = class_names[cid] if cid < len(class_names) else f"class_{cid}"
+                        counts[cn] = counts.get(cn, 0) + 1
+                        total += 1
+                        has = True
+            if has:
+                imgs += 1
+        return counts, total, imgs
 
-    for lf in label_files:
-        has_ann = False
-        with open(lf) as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 5:
-                    cls_id = int(parts[0])
-                    cls_name = class_names[cls_id] if cls_id < len(class_names) else f"class_{cls_id}"
-                    class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
-                    total_annotations += 1
-                    has_ann = True
-        if has_ann:
-            images_with_annotations += 1
+    lbl_dir = os.path.join(base, "labels")
+    splits = {}
+    all_files = []
 
-    # Sort by count
-    distribution = sorted(class_counts.items(), key=lambda x: -x[1])
+    for split in ["train", "val", "test"]:
+        sub = os.path.join(lbl_dir, split)
+        if os.path.isdir(sub):
+            files = [os.path.join(sub, f) for f in os.listdir(sub) if f.endswith('.txt')]
+            all_files.extend(files)
+            counts, total, imgs = count_labels(files)
+            splits[split] = {
+                "images": len(files), "annotations": total,
+                "distribution": [{"class": c, "count": n} for c, n in sorted(counts.items(), key=lambda x: -x[1])],
+            }
+
+    if not splits:
+        flat = [os.path.join(lbl_dir, f) for f in os.listdir(lbl_dir) if f.endswith('.txt')] if os.path.isdir(lbl_dir) else []
+        all_files = flat
+
+    total_counts, total_anns, total_imgs = count_labels(all_files)
 
     return {
-        "total_images": len(label_files),
-        "images_with_annotations": images_with_annotations,
-        "total_annotations": total_annotations,
+        "total_images": len(all_files),
+        "images_with_annotations": total_imgs,
+        "total_annotations": total_anns,
         "class_names": class_names,
         "num_classes": len(class_names),
-        "distribution": [{"class": c, "count": n} for c, n in distribution],
+        "distribution": [{"class": c, "count": n} for c, n in sorted(total_counts.items(), key=lambda x: -x[1])],
+        "splits": splits,
     }
 
 

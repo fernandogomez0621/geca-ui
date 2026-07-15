@@ -216,19 +216,35 @@ function DatasetsPage() {
 
   // STATS VIEW
   if (viewStats && stats) {
+    const splitColors = { train: '#6c5ce7', val: '#00b894', test: '#e17055' };
+    const splitLabels = { train: 'Entrenamiento', val: 'Validación', test: 'Testeo' };
     return (
       <div className="page">
         <div className="page-header">
-          <div><h1>Estadísticas: {viewStats.name}</h1><p>{stats.total_images} imágenes, {stats.total_annotations} anotaciones</p></div>
+          <div><h1>Estadísticas: {viewStats.name}</h1><p>{stats.total_images} imágenes, {stats.total_annotations} anotaciones, {stats.num_classes || 0} clases</p></div>
           <button className="btn-secondary" onClick={() => { setViewStats(null); setStats(null); }}>← Volver</button>
         </div>
         <div className="analytics-cards" style={{gridTemplateColumns: 'repeat(3, 1fr)'}}>
-          <div className="analytics-card"><div className="analytics-card-value">{stats.total_images}</div><div className="analytics-card-label">Imágenes</div></div>
-          <div className="analytics-card"><div className="analytics-card-value">{stats.total_annotations}</div><div className="analytics-card-label">Anotaciones</div></div>
-          <div className="analytics-card"><div className="analytics-card-value">{stats.num_classes || stats.class_names?.length || 0}</div><div className="analytics-card-label">Clases</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{stats.total_images}</div><div className="analytics-card-label">Imágenes Total</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{stats.total_annotations}</div><div className="analytics-card-label">Anotaciones Total</div></div>
+          <div className="analytics-card"><div className="analytics-card-value">{stats.num_classes || 0}</div><div className="analytics-card-label">Clases</div></div>
         </div>
+
+        {/* Per-split stats */}
+        {stats.splits && Object.keys(stats.splits).length > 0 && (
+          <div className="analytics-cards" style={{gridTemplateColumns: `repeat(${Object.keys(stats.splits).length}, 1fr)`}}>
+            {Object.entries(stats.splits).map(([split, s]) => (
+              <div className="analytics-card" key={split} style={{borderLeft: `3px solid ${splitColors[split] || '#6c5ce7'}`}}>
+                <div className="analytics-card-value">{s.images}</div>
+                <div className="analytics-card-label">{splitLabels[split] || split} ({s.annotations} ann)</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Total distribution */}
         <div className="card">
-          <h3>Distribución por Clase</h3>
+          <h3>Distribución Total por Clase</h3>
           {stats.distribution?.length > 0 ? (
             <ResponsiveContainer width="100%" height={Math.max(200, stats.distribution.length * 35)}>
               <BarChart data={stats.distribution} layout="vertical" margin={{left: 120, right: 20}}>
@@ -241,6 +257,24 @@ function DatasetsPage() {
             </ResponsiveContainer>
           ) : <p className="empty-text">Sin anotaciones</p>}
         </div>
+
+        {/* Per-split distribution */}
+        {stats.splits && Object.entries(stats.splits).map(([split, s]) => (
+          s.distribution?.length > 0 && (
+            <div className="card" key={split}>
+              <h3 style={{color: splitColors[split]}}>{splitLabels[split] || split} — {s.images} imgs, {s.annotations} anotaciones</h3>
+              <ResponsiveContainer width="100%" height={Math.max(150, s.distribution.length * 30)}>
+                <BarChart data={s.distribution} layout="vertical" margin={{left: 120, right: 20}}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+                  <XAxis type="number" tick={{fill: '#9898b0', fontSize: 11}} />
+                  <YAxis type="category" dataKey="class" tick={{fill: '#9898b0', fontSize: 11}} width={110} />
+                  <Tooltip contentStyle={{background: '#15151e', border: '1px solid #2a2a3a', borderRadius: 8, color: '#eaeaf2'}} itemStyle={{color: '#eaeaf2'}} labelStyle={{color: '#eaeaf2', fontWeight: 'bold'}} />
+                  <Bar dataKey="count" fill={splitColors[split] || '#6c5ce7'} radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )
+        ))}
       </div>
     );
   }
