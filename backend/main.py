@@ -6,6 +6,7 @@ Credenciales CVAT configurables desde la app.
 """
 
 from fastapi import FastAPI, Depends, HTTPException, Request
+import numpy as np
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Boolean, Text
@@ -1804,13 +1805,57 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
     if not all_pairs:
         return {"status": "error", "message": "No hay imagenes en los sources seleccionados"}
 
-    # Shuffle and split into train/val/test
+    # Stratified split: maintain class proportions in train/val/test
+    from collections import Counter
     random.shuffle(all_pairs)
-    train_count = int(len(all_pairs) * data.train_pct / 100)
-    val_count = int(len(all_pairs) * data.val_pct / 100)
-    train_pairs = all_pairs[:train_count]
-    val_pairs = all_pairs[train_count:train_count + val_count]
-    test_pairs = all_pairs[train_count + val_count:]
+
+    # Determine dominant class per image
+    class_groups = {}  # class_name -> list of pairs
+    no_label = []
+    for img_path, lbl_path, unique_name in all_pairs:
+        if os.path.exists(lbl_path):
+            counts = Counter()
+            with open(lbl_path) as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        cid = int(parts[0])
+                        cn = all_class_names[cid] if cid < len(all_class_names) else f"class_{cid}"
+                        counts[cn] += 1
+            if counts:
+                dominant = counts.most_common(1)[0][0]
+                if dominant not in class_groups:
+                    class_groups[dominant] = []
+                class_groups[dominant].append((img_path, lbl_path, unique_name))
+            else:
+                no_label.append((img_path, lbl_path, unique_name))
+        else:
+            no_label.append((img_path, lbl_path, unique_name))
+
+    # Split each class group proportionally
+    train_pairs, val_pairs, test_pairs = [], [], []
+    for cn, pairs in class_groups.items():
+        random.shuffle(pairs)
+        n = len(pairs)
+        n_train = max(1, int(n * data.train_pct / 100))
+        n_val = max(1, int(n * data.val_pct / 100)) if n > 2 else 0
+        train_pairs.extend(pairs[:n_train])
+        val_pairs.extend(pairs[n_train:n_train + n_val])
+        test_pairs.extend(pairs[n_train + n_val:])
+
+    # Distribute background images proportionally
+    if no_label:
+        random.shuffle(no_label)
+        n = len(no_label)
+        n_train = int(n * data.train_pct / 100)
+        n_val = int(n * data.val_pct / 100)
+        train_pairs.extend(no_label[:n_train])
+        val_pairs.extend(no_label[n_train:n_train + n_val])
+        test_pairs.extend(no_label[n_train + n_val:])
+
+    random.shuffle(train_pairs)
+    random.shuffle(val_pairs)
+    random.shuffle(test_pairs)
 
     # Copy files
     for pairs, split in [(train_pairs, "train"), (val_pairs, "val"), (test_pairs, "test")]:
@@ -1965,3 +2010,132 @@ async def stream_result(filename: str, request: Request):
         return StreamingResponse(iter_file(), headers={
             "Accept-Ranges": "bytes", "Content-Length": str(file_size), "Content-Type": "video/mp4",
         })
+
+
+# ==============================================
+#  PRE-ANNOTATE CVAT WITH YOLO MODEL
+# ==============================================
+
+class PreAnnotateRequest(BaseModel):
+    model_name: str = "yolo26m.pt"
+    conf: float = 0.25
+
+
+@app.post("/api/cvat/tasks/{task_id}/pre-annotate")
+async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: User = Depends(get_current_user)):
+    """Run YOLO inference on CVAT task frames and upload annotations"""
+    from ultralytics import YOLO as YOLOModel
+    import io
+
+    model_path = os.path.join(MODELS_DIR, data.model_name)
+    if not os.path.exists(model_path):
+        return {"status": "error", "message": f"Modelo {data.model_name} no encontrado"}
+
+    db = SessionLocal()
+    cfg = get_cvat_config(db)
+    db.close()
+    if not cfg["cvat_url"] or not cfg["cvat_username"]:
+        return {"status": "error", "message": "CVAT no configurado"}
+
+    try:
+        headers = {"Host": cfg["cvat_host"]} if cfg["cvat_host"] else {}
+
+        # 1. Login
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=headers) as client:
+            resp = await client.post("/api/auth/login", json={
+                "username": cfg["cvat_username"], "password": cfg["cvat_password"]
+            })
+            token = resp.json().get("key")
+        auth_headers = {**headers, "Authorization": f"Token {token}"}
+
+        # 2. Get task info (labels, frame count)
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=auth_headers) as client:
+            resp = await client.get(f"/api/tasks/{task_id}")
+            task_info = resp.json()
+            frame_count = task_info.get("size", 0)
+            task_labels = task_info.get("labels", [])
+            label_map = {l["name"]: l["id"] for l in task_labels}
+
+            # Get job ID
+            resp = await client.get(f"/api/tasks/{task_id}/jobs")
+            jobs = resp.json().get("results", [])
+            if not jobs:
+                return {"status": "error", "message": "No hay jobs en esta tarea"}
+
+        # 3. Load model
+        model = YOLOModel(model_path)
+        model_classes = model.names  # {0: 'vj_led', 1: 'kc', ...}
+
+        # 4. Process each frame
+        shapes = []
+        frames_with_det = 0
+
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=60, headers=auth_headers) as client:
+            for frame_num in range(frame_count):
+                # Download frame from CVAT
+                resp = await client.get(f"/api/tasks/{task_id}/data",
+                    params={"type": "frame", "number": frame_num, "quality": "original"})
+                if resp.status_code != 200:
+                    continue
+
+                # Convert to numpy array
+                import cv2
+                img_array = np.frombuffer(resp.content, np.uint8)
+                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+
+                h, w = frame.shape[:2]
+
+                # Run inference
+                results = model(frame, conf=data.conf, imgsz=640, verbose=False)
+
+                frame_has_det = False
+                for result in results:
+                    for box in result.boxes:
+                        cls_id = int(box.cls.item())
+                        conf_score = float(box.conf.item())
+                        cls_name = model_classes.get(cls_id, "")
+
+                        # Map model class to CVAT label
+                        cvat_label_id = label_map.get(cls_name)
+                        if cvat_label_id is None:
+                            continue
+
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        shapes.append({
+                            "type": "rectangle",
+                            "frame": frame_num,
+                            "label_id": cvat_label_id,
+                            "points": [float(x1), float(y1), float(x2), float(y2)],
+                            "occluded": False,
+                            "attributes": [],
+                        })
+                        frame_has_det = True
+
+                if frame_has_det:
+                    frames_with_det += 1
+
+        # 5. Upload annotations to CVAT
+        if shapes:
+            async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=120, headers=auth_headers) as client:
+                resp = await client.patch(
+                    f"/api/tasks/{task_id}/annotations",
+                    params={"action": "create"},
+                    json={"shapes": shapes, "tags": [], "tracks": []},
+                )
+                if resp.status_code not in (200, 201):
+                    return {"status": "error", "message": f"Error subiendo anotaciones: {resp.status_code}"}
+
+        return {
+            "status": "ok",
+            "task_id": task_id,
+            "frames_total": frame_count,
+            "frames_with_detections": frames_with_det,
+            "total_annotations": len(shapes),
+            "model": data.model_name,
+            "confidence": data.conf,
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

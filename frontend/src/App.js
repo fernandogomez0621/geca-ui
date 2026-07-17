@@ -273,6 +273,8 @@ function DatasetsPage() {
   const [viewStats, setViewStats] = useState(null);
   const [stats, setStats] = useState(null);
   const [models, setModels] = useState([]);
+  const [preAnnotating, setPreAnnotating] = useState(null);
+  const [preAnnotateModel, setPreAnnotateModel] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -331,6 +333,20 @@ function DatasetsPage() {
     if (!window.confirm(`¿Eliminar dataset "${name}"?`)) return;
     await api(`/api/datasets/${dtype}/${name}`, { method: 'DELETE' });
     load();
+  };
+
+  const preAnnotate = async (taskId) => {
+    if (!preAnnotateModel || preAnnotating) return;
+    setPreAnnotating(taskId);
+    const r = await api(`/api/cvat/tasks/${taskId}/pre-annotate`, {
+      method: 'POST', body: JSON.stringify({ model_name: preAnnotateModel, conf: 0.25 })
+    });
+    setPreAnnotating(null);
+    if (r?.status === 'ok') {
+      alert(`✓ Pre-anotado: ${r.total_annotations} anotaciones en ${r.frames_with_detections}/${r.frames_total} frames`);
+    } else {
+      alert(`✕ Error: ${r?.message || 'Fallo'}`);
+    }
   };
 
   if (loading) return <div className="page"><div className="loading">Cargando datasets...</div></div>;
@@ -494,9 +510,21 @@ function DatasetsPage() {
 
       {/* IMPORT FROM CVAT */}
       <h2 style={{fontSize: 16, marginBottom: 12, marginTop: 24, color: '#e17055'}}>Importar de CVAT</h2>
+      {models.length > 0 && (
+        <div style={{marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8}}>
+          <span style={{fontSize: 12, color: '#9898b0'}}>Modelo para pre-anotar:</span>
+          <select value={preAnnotateModel} onChange={e => setPreAnnotateModel(e.target.value)}
+            style={{padding: '4px 8px', borderRadius: 6, background: '#1a1a2e', color: '#eaeaf2', border: '1px solid #2a2a3a', fontSize: 12}}>
+            <option value="">Seleccionar modelo...</option>
+            {models.filter(m => m.name.startsWith('geca_')).map(m => (
+              <option key={m.name} value={m.name}>{m.name} ({m.size_mb} MB)</option>
+            ))}
+          </select>
+        </div>
+      )}
       {cvatTasks.length > 0 ? cvatTasks.map(t => (
         <div className="card" key={t.id} style={{marginBottom: 8}}>
-          <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
+          <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
             <div style={{flex: 1}}>
               <h4>#{t.id}: {t.name}</h4>
               <div className="video-meta">
@@ -509,6 +537,12 @@ function DatasetsPage() {
               onClick={() => importFromCvat(t.id, t.name)}>
               {importing === t.id ? '⏳ Importando...' : '⬇ Importar'}
             </button>
+            {preAnnotateModel && (
+              <button className="btn-sm btn-secondary" disabled={preAnnotating === t.id}
+                onClick={() => preAnnotate(t.id)}>
+                {preAnnotating === t.id ? '⏳ Anotando...' : '🤖 Pre-anotar'}
+              </button>
+            )}
           </div>
         </div>
       )) : <p className="empty-text">No hay tareas en CVAT</p>}

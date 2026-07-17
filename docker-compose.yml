@@ -72,6 +72,7 @@ services:
     container_name: geca_jupyter
     ports:
       - "8888:8888"
+    shm_size: '8g'
     volumes:
       - /mnt/shared:/home/jovyan/shared
       - jupyter_notebooks:/home/jovyan/work
