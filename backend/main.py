@@ -2014,7 +2014,7 @@ class PreAnnotateRequest(BaseModel):
 async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: User = Depends(get_current_user)):
     """Run YOLO inference on CVAT task frames and upload annotations"""
     from ultralytics import YOLO as YOLOModel
-    import io
+    import cv2
 
     model_path = os.path.join(MODELS_DIR, data.model_name)
     if not os.path.exists(model_path):
@@ -2029,73 +2029,55 @@ async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: U
     try:
         headers = {"Host": cfg["cvat_host"]} if cfg["cvat_host"] else {}
 
-        # 1. Login
-        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=headers) as client:
-            resp = await client.post("/api/auth/login", json={
-                "username": cfg["cvat_username"], "password": cfg["cvat_password"]
-            })
-            token = resp.json().get("key")
+        # Login
+        login_resp = httpx.post(cfg["cvat_url"] + "/api/auth/login", headers=headers,
+            json={"username": cfg["cvat_username"], "password": cfg["cvat_password"]}, timeout=30)
+        token = login_resp.json().get("key")
         auth_headers = {**headers, "Authorization": f"Token {token}"}
 
-        # 2. Get task info and labels
-        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=auth_headers) as client:
-            resp = await client.get(f"/api/tasks/{task_id}")
-            task_info = resp.json()
-            frame_count = task_info.get("size", 0)
+        # Get task info
+        task_resp = httpx.get(cfg["cvat_url"] + f"/api/tasks/{task_id}", headers=auth_headers, timeout=30)
+        frame_count = task_resp.json().get("size", 0)
 
-            # Fetch labels separately
-            resp = await client.get(f"/api/labels", params={"task_id": task_id})
-            labels_data = resp.json()
-            task_labels = labels_data.get("results", []) if isinstance(labels_data, dict) else labels_data
-            label_map = {l["name"]: l["id"] for l in task_labels}
+        # Get labels
+        labels_resp = httpx.get(cfg["cvat_url"] + "/api/labels", headers=auth_headers,
+            params={"task_id": task_id}, timeout=30)
+        labels_data = labels_resp.json()
+        task_labels = labels_data.get("results", []) if isinstance(labels_data, dict) else labels_data
+        label_map = {l["name"]: l["id"] for l in task_labels}
 
-            # Get job ID
-            resp = await client.get(f"/api/tasks/{task_id}/jobs")
-            jobs_data = resp.json()
-            jobs = jobs_data.get("results", []) if isinstance(jobs_data, dict) else jobs_data
-            if not jobs:
-                return {"status": "error", "message": "No hay jobs en esta tarea"}
-
-        # 3. Load model
+        # Load model
         model = YOLOModel(model_path)
-        model_classes = model.names  # {0: 'vj_led', 1: 'kc', ...}
+        model_classes = model.names
 
-        # 4. Process each frame
+        # Process each frame
         shapes = []
         frames_with_det = 0
 
-        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=60, headers=auth_headers) as client:
-            for frame_num in range(frame_count):
-                # Download frame from CVAT
-                resp = await client.get(f"/api/tasks/{task_id}/data",
-                    params={"type": "frame", "number": frame_num, "quality": "original"})
+        for frame_num in range(frame_count):
+            try:
+                resp = httpx.get(cfg["cvat_url"] + f"/api/tasks/{task_id}/data",
+                    headers=auth_headers,
+                    params={"type": "frame", "number": frame_num, "quality": "original"},
+                    timeout=60)
                 if resp.status_code != 200:
                     continue
 
-                # Convert to numpy array
-                import cv2
                 img_array = np.frombuffer(resp.content, np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 if frame is None:
                     continue
 
-                h, w = frame.shape[:2]
-
-                # Run inference
                 results = model(frame, conf=data.conf, imgsz=640, verbose=False)
 
                 frame_has_det = False
                 for result in results:
                     for box in result.boxes:
                         cls_id = int(box.cls.item())
-                        conf_score = float(box.conf.item())
                         cls_name = model_classes.get(cls_id, "")
-
-                        # Map model class to CVAT label
                         cvat_label_id = label_map.get(cls_name)
                         if cvat_label_id is None:
                             continue
-
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                         shapes.append({
                             "type": "rectangle",
@@ -2106,20 +2088,18 @@ async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: U
                             "attributes": [],
                         })
                         frame_has_det = True
-
                 if frame_has_det:
                     frames_with_det += 1
+            except Exception:
+                continue
 
-        # 5. Upload annotations to CVAT
+        # Upload annotations
         if shapes:
-            async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=120, headers=auth_headers) as client:
-                resp = await client.patch(
-                    f"/api/tasks/{task_id}/annotations",
-                    params={"action": "create"},
-                    json={"shapes": shapes, "tags": [], "tracks": []},
-                )
-                if resp.status_code not in (200, 201):
-                    return {"status": "error", "message": f"Error subiendo anotaciones: {resp.status_code}"}
+            resp = httpx.patch(cfg["cvat_url"] + f"/api/tasks/{task_id}/annotations",
+                headers=auth_headers, params={"action": "create"},
+                json={"shapes": shapes, "tags": [], "tracks": []}, timeout=120)
+            if resp.status_code not in (200, 201):
+                return {"status": "error", "message": f"Error subiendo: {resp.status_code}"}
 
         return {
             "status": "ok",
@@ -2128,7 +2108,6 @@ async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: U
             "frames_with_detections": frames_with_det,
             "total_annotations": len(shapes),
             "model": data.model_name,
-            "confidence": data.conf,
         }
 
     except Exception as e:
