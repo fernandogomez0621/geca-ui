@@ -5,7 +5,7 @@ Integración con CVAT para consulta de datasets.
 Credenciales CVAT configurables desde la app.
 """
 
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks
 import numpy as np
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
@@ -2011,10 +2011,9 @@ class PreAnnotateRequest(BaseModel):
 
 
 @app.post("/api/cvat/tasks/{task_id}/pre-annotate")
-async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: User = Depends(get_current_user)):
-    """Run YOLO inference on CVAT task frames and upload annotations"""
+async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, background_tasks: BackgroundTasks, user: User = Depends(get_current_user)):
+    """Start pre-annotation as background task"""
     from ultralytics import YOLO as YOLOModel
-    import cv2
 
     model_path = os.path.join(MODELS_DIR, data.model_name)
     if not os.path.exists(model_path):
@@ -2026,31 +2025,54 @@ async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: U
     if not cfg["cvat_url"] or not cfg["cvat_username"]:
         return {"status": "error", "message": "CVAT no configurado"}
 
+    # Check if already running
+    if pre_annotate_progress.get(task_id, {}).get("running"):
+        return {"status": "error", "message": "Ya hay una pre-anotación en curso para esta tarea"}
+
+    pre_annotate_progress[task_id] = {"running": True, "current": 0, "total": 0, "annotations": 0, "status": "starting"}
+
+    background_tasks.add_task(run_pre_annotate, task_id, model_path, data.conf, cfg)
+
+    return {"status": "started", "task_id": task_id}
+
+
+@app.get("/api/cvat/tasks/{task_id}/pre-annotate/progress")
+def get_pre_annotate_progress(task_id: int, user: User = Depends(get_current_user)):
+    """Get pre-annotation progress"""
+    progress = pre_annotate_progress.get(task_id, {})
+    return progress
+
+
+pre_annotate_progress = {}
+
+
+def run_pre_annotate(task_id, model_path, conf, cfg):
+    """Background task for pre-annotation"""
+    import cv2
+    from ultralytics import YOLO as YOLOModel
+
     try:
         headers = {"Host": cfg["cvat_host"]} if cfg["cvat_host"] else {}
 
-        # Login
         login_resp = httpx.post(cfg["cvat_url"] + "/api/auth/login", headers=headers,
             json={"username": cfg["cvat_username"], "password": cfg["cvat_password"]}, timeout=30)
         token = login_resp.json().get("key")
         auth_headers = {**headers, "Authorization": f"Token {token}"}
 
-        # Get task info
         task_resp = httpx.get(cfg["cvat_url"] + f"/api/tasks/{task_id}", headers=auth_headers, timeout=30)
         frame_count = task_resp.json().get("size", 0)
 
-        # Get labels
         labels_resp = httpx.get(cfg["cvat_url"] + "/api/labels", headers=auth_headers,
             params={"task_id": task_id}, timeout=30)
         labels_data = labels_resp.json()
         task_labels = labels_data.get("results", []) if isinstance(labels_data, dict) else labels_data
         label_map = {l["name"]: l["id"] for l in task_labels}
 
-        # Load model
         model = YOLOModel(model_path)
         model_classes = model.names
 
-        # Process each frame
+        pre_annotate_progress[task_id] = {"running": True, "current": 0, "total": frame_count, "annotations": 0, "status": "processing"}
+
         shapes = []
         frames_with_det = 0
 
@@ -2061,14 +2083,16 @@ async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: U
                     params={"type": "frame", "number": frame_num, "quality": "original"},
                     timeout=60)
                 if resp.status_code != 200:
+                    pre_annotate_progress[task_id]["current"] = frame_num + 1
                     continue
 
                 img_array = np.frombuffer(resp.content, np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 if frame is None:
+                    pre_annotate_progress[task_id]["current"] = frame_num + 1
                     continue
 
-                results = model(frame, conf=data.conf, imgsz=640, verbose=False)
+                results = model(frame, conf=conf, imgsz=640, verbose=False)
 
                 frame_has_det = False
                 for result in results:
@@ -2090,25 +2114,25 @@ async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: U
                         frame_has_det = True
                 if frame_has_det:
                     frames_with_det += 1
+
+                pre_annotate_progress[task_id]["current"] = frame_num + 1
+                pre_annotate_progress[task_id]["annotations"] = len(shapes)
             except Exception:
+                pre_annotate_progress[task_id]["current"] = frame_num + 1
                 continue
 
-        # Upload annotations
+        # Upload
+        pre_annotate_progress[task_id]["status"] = "uploading"
         if shapes:
             resp = httpx.patch(cfg["cvat_url"] + f"/api/tasks/{task_id}/annotations",
                 headers=auth_headers, params={"action": "create"},
                 json={"shapes": shapes, "tags": [], "tracks": []}, timeout=120)
-            if resp.status_code not in (200, 201):
-                return {"status": "error", "message": f"Error subiendo: {resp.status_code}"}
 
-        return {
-            "status": "ok",
-            "task_id": task_id,
-            "frames_total": frame_count,
-            "frames_with_detections": frames_with_det,
-            "total_annotations": len(shapes),
-            "model": data.model_name,
+        pre_annotate_progress[task_id] = {
+            "running": False, "current": frame_count, "total": frame_count,
+            "annotations": len(shapes), "frames_with_det": frames_with_det,
+            "status": "done"
         }
 
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        pre_annotate_progress[task_id] = {"running": False, "current": 0, "total": 0, "annotations": 0, "status": f"error: {str(e)}"}

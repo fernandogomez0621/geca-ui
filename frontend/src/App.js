@@ -275,6 +275,7 @@ function DatasetsPage() {
   const [models, setModels] = useState([]);
   const [preAnnotating, setPreAnnotating] = useState(null);
   const [preAnnotateModel, setPreAnnotateModel] = useState('');
+  const [preAnnotateProgress, setPreAnnotateProgress] = useState(null);
 
   const load = () => {
     setLoading(true);
@@ -338,15 +339,36 @@ function DatasetsPage() {
   const preAnnotate = async (taskId) => {
     if (!preAnnotateModel || preAnnotating) return;
     setPreAnnotating(taskId);
+    setPreAnnotateProgress({ current: 0, total: 0, annotations: 0, status: 'starting' });
+
     const r = await api(`/api/cvat/tasks/${taskId}/pre-annotate`, {
       method: 'POST', body: JSON.stringify({ model_name: preAnnotateModel, conf: 0.25 })
     });
-    setPreAnnotating(null);
-    if (r?.status === 'ok') {
-      alert(`✓ Pre-anotado: ${r.total_annotations} anotaciones en ${r.frames_with_detections}/${r.frames_total} frames`);
-    } else {
+
+    if (r?.status !== 'started') {
+      setPreAnnotating(null);
+      setPreAnnotateProgress(null);
       alert(`✕ Error: ${r?.message || 'Fallo'}`);
+      return;
     }
+
+    // Poll progress
+    const poll = setInterval(async () => {
+      const p = await api(`/api/cvat/tasks/${taskId}/pre-annotate/progress`);
+      if (p) {
+        setPreAnnotateProgress(p);
+        if (!p.running) {
+          clearInterval(poll);
+          setPreAnnotating(null);
+          if (p.status === 'done') {
+            alert(`✓ Pre-anotado: ${p.annotations} anotaciones en ${p.frames_with_det}/${p.total} frames`);
+          } else if (p.status?.startsWith('error')) {
+            alert(`✕ ${p.status}`);
+          }
+          setTimeout(() => setPreAnnotateProgress(null), 3000);
+        }
+      }
+    }, 2000);
   };
 
   if (loading) return <div className="page"><div className="loading">Cargando datasets...</div></div>;
@@ -544,6 +566,20 @@ function DatasetsPage() {
               </button>
             )}
           </div>
+          {preAnnotating === t.id && preAnnotateProgress && (
+            <div style={{marginTop: 8}}>
+              <div style={{display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#9898b0', marginBottom: 4}}>
+                <span>{preAnnotateProgress.status === 'uploading' ? 'Subiendo anotaciones...' : `Frame ${preAnnotateProgress.current || 0} / ${preAnnotateProgress.total || '?'}`}</span>
+                <span>{preAnnotateProgress.annotations || 0} anotaciones</span>
+              </div>
+              <div style={{width: '100%', height: 6, backgroundColor: '#1a1a2e', borderRadius: 3, overflow: 'hidden'}}>
+                <div style={{
+                  width: `${preAnnotateProgress.total ? (preAnnotateProgress.current / preAnnotateProgress.total * 100) : 0}%`,
+                  height: '100%', backgroundColor: '#6c5ce7', borderRadius: 3, transition: 'width 0.3s'
+                }} />
+              </div>
+            </div>
+          )}
         </div>
       )) : <p className="empty-text">No hay tareas en CVAT</p>}
 
