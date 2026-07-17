@@ -1798,7 +1798,13 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
             lbl_f = img_f.rsplit('.', 1)[0] + '.txt'
             img_path = os.path.join(img_dir, img_f)
             lbl_path = os.path.join(lbl_dir, lbl_f)
-            # Prefix with source name to avoid duplicates
+            # Skip images without annotations (no backgrounds)
+            if not os.path.exists(lbl_path):
+                continue
+            with open(lbl_path) as check_f:
+                content = check_f.read().strip()
+            if not content:
+                continue
             unique_name = f"{src_name}_{img_f}"
             all_pairs.append((img_path, lbl_path, unique_name))
 
@@ -1811,26 +1817,19 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
 
     # Determine dominant class per image
     class_groups = {}  # class_name -> list of pairs
-    no_label = []
     for img_path, lbl_path, unique_name in all_pairs:
-        if os.path.exists(lbl_path):
-            counts = Counter()
-            with open(lbl_path) as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) >= 5:
-                        cid = int(parts[0])
-                        cn = all_class_names[cid] if cid < len(all_class_names) else f"class_{cid}"
-                        counts[cn] += 1
-            if counts:
-                dominant = counts.most_common(1)[0][0]
-                if dominant not in class_groups:
-                    class_groups[dominant] = []
-                class_groups[dominant].append((img_path, lbl_path, unique_name))
-            else:
-                no_label.append((img_path, lbl_path, unique_name))
-        else:
-            no_label.append((img_path, lbl_path, unique_name))
+        counts = Counter()
+        with open(lbl_path) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    cid = int(parts[0])
+                    cn = all_class_names[cid] if cid < len(all_class_names) else f"class_{cid}"
+                    counts[cn] += 1
+        dominant = counts.most_common(1)[0][0]
+        if dominant not in class_groups:
+            class_groups[dominant] = []
+        class_groups[dominant].append((img_path, lbl_path, unique_name))
 
     # Split each class group proportionally
     train_pairs, val_pairs, test_pairs = [], [], []
@@ -1842,16 +1841,6 @@ def create_final_dataset(data: CreateDatasetRequest, user: User = Depends(get_cu
         train_pairs.extend(pairs[:n_train])
         val_pairs.extend(pairs[n_train:n_train + n_val])
         test_pairs.extend(pairs[n_train + n_val:])
-
-    # Distribute background images proportionally
-    if no_label:
-        random.shuffle(no_label)
-        n = len(no_label)
-        n_train = int(n * data.train_pct / 100)
-        n_val = int(n * data.val_pct / 100)
-        train_pairs.extend(no_label[:n_train])
-        val_pairs.extend(no_label[n_train:n_train + n_val])
-        test_pairs.extend(no_label[n_train + n_val:])
 
     random.shuffle(train_pairs)
     random.shuffle(val_pairs)
@@ -2048,17 +2037,22 @@ async def pre_annotate_cvat_task(task_id: int, data: PreAnnotateRequest, user: U
             token = resp.json().get("key")
         auth_headers = {**headers, "Authorization": f"Token {token}"}
 
-        # 2. Get task info (labels, frame count)
+        # 2. Get task info and labels
         async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=auth_headers) as client:
             resp = await client.get(f"/api/tasks/{task_id}")
             task_info = resp.json()
             frame_count = task_info.get("size", 0)
-            task_labels = task_info.get("labels", [])
+
+            # Fetch labels separately
+            resp = await client.get(f"/api/labels", params={"task_id": task_id})
+            labels_data = resp.json()
+            task_labels = labels_data.get("results", []) if isinstance(labels_data, dict) else labels_data
             label_map = {l["name"]: l["id"] for l in task_labels}
 
             # Get job ID
             resp = await client.get(f"/api/tasks/{task_id}/jobs")
-            jobs = resp.json().get("results", [])
+            jobs_data = resp.json()
+            jobs = jobs_data.get("results", []) if isinstance(jobs_data, dict) else jobs_data
             if not jobs:
                 return {"status": "error", "message": "No hay jobs en esta tarea"}
 
