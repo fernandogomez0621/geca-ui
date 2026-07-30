@@ -2192,7 +2192,7 @@ def worker_task_progress(task_id: str, user: User = Depends(get_current_user)):
 @app.get("/api/videos-list")
 def list_videos(user: User = Depends(get_current_user)):
     """List available videos for processing"""
-    videos_dir = os.path.join(SHARED_DIR, "videos")
+    videos_dir = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), "videos")
     videos = []
     if os.path.isdir(videos_dir):
         for f in sorted(os.listdir(videos_dir)):
@@ -2211,7 +2211,7 @@ def list_videos(user: User = Depends(get_current_user)):
 def get_video_analytics(user: User = Depends(get_current_user)):
     """Aggregate video detection metrics from Excel results"""
     import openpyxl
-    results_dir = os.path.join(SHARED_DIR, "results")
+    results_dir = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), "results")
     if not os.path.isdir(results_dir):
         return {"videos": [], "summary": {}}
 
@@ -2280,7 +2280,7 @@ def get_video_analytics(user: User = Depends(get_current_user)):
 @app.get("/api/audio-analytics")
 def get_audio_analytics(user: User = Depends(get_current_user)):
     """Aggregate audio mention metrics across all videos"""
-    audio_dir = os.path.join(SHARED_DIR, "audio")
+    audio_dir = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), "audio")
     if not os.path.isdir(audio_dir):
         return {"videos": [], "kpis": {}}
 

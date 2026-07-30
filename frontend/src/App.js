@@ -328,7 +328,7 @@ function VideoAnalyticsPage() {
           <table className="data-table">
             <thead><tr><th>Marca</th><th>Detecciones</th><th>Tiempo (s)</th>{selectedVideo==='all'&&<th>Videos</th>}</tr></thead>
             <tbody>{brands.map((b,i) => (
-              <tr key={i}><td>{b.label}</td><td>{(b.detections||0).toLocaleString()}</td><td>{b.time_seconds||0}</td>{selectedVideo==='all'&&<td>{b.videos||'-'}</td>}</tr>
+              <tr key={i}><td>{b.label}</td><td>{(b.detections||0).toLocaleString()}</td><td>{(b.frames||0).toLocaleString()}</td><td>{b.avg_when_present||0}</td><td>{b.avg_total||0}</td><td>{b.time_seconds||0}</td><td>{b.time_percent||0}%</td>{selectedVideo==='all'&&<td>{b.videos||'-'}</td>}</tr>
             ))}</tbody>
           </table>
         </div>
