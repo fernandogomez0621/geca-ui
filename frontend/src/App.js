@@ -139,7 +139,7 @@ function ContextsPage() {
 function AudioAnalyticsPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedVideo, setSelectedVideo] = useState('all');
+  const [excludedVideos, setExcludedVideos] = useState(new Set());
 
   useEffect(() => {
     api('/api/audio-analytics').then(r => { setData(r); setLoading(false); });
@@ -148,10 +148,27 @@ function AudioAnalyticsPage() {
   if (loading) return <div className="page"><div className="loading">Cargando análisis...</div></div>;
   if (!data || !data.videos?.length) return <div className="page"><div className="page-header"><h1>Análisis Audio</h1></div><p className="empty-text">No hay datos de audio. Procesa videos desde la sección Videos.</p></div>;
 
-  const kpis = data.kpis || {};
-  const videos = data.videos || [];
-  const brands = selectedVideo === 'all' ? data.brand_summary || [] :
-    (videos.find(v => v.video === selectedVideo)?.brands || []).map(b => ({label: b.label, mentions: b.mentions, duration: b.duration}));
+  const allVideos = data.videos || [];
+  const videos = allVideos.filter(v => !excludedVideos.has(v.video));
+  const toggleVideo = (name) => {
+    const next = new Set(excludedVideos);
+    next.has(name) ? next.delete(name) : next.add(name);
+    setExcludedVideos(next);
+  };
+  const brandMap = {};
+  videos.forEach(v => v.brands?.forEach(b => {
+    if (!brandMap[b.label]) brandMap[b.label] = {label:b.label, mentions:0, duration:0, count:0};
+    brandMap[b.label].mentions += (b.mentions||0);
+    brandMap[b.label].duration += (b.duration||0);
+    brandMap[b.label].count++;
+  }));
+  const brands = Object.values(brandMap).sort((a,b) => b.mentions - a.mentions);
+  const kpis = {
+    total_videos: videos.length,
+    total_brands: brands.length,
+    total_mentions: brands.reduce((s,b) => s + b.mentions, 0),
+    total_duration: Math.round(brands.reduce((s,b) => s + b.duration, 0) * 10) / 10,
+  };
 
   const chartColors = ['#6c5ce7','#00b894','#e17055','#ffd43b','#3b82f6','#ef4444','#10b981','#f59e0b','#8b5cf6','#ec4899'];
 
@@ -159,11 +176,17 @@ function AudioAnalyticsPage() {
     <div className="page">
       <div className="page-header">
         <div><h1>Análisis Audio</h1><p>Menciones de marcas detectadas por Whisper</p></div>
-        <select value={selectedVideo} onChange={e => setSelectedVideo(e.target.value)}
-          style={{padding:'6px 12px',borderRadius:6,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:13}}>
-          <option value="all">Todos los videos</option>
-          {videos.map(v => <option key={v.video} value={v.video}>{v.video}</option>)}
-        </select>
+        <div style={{display:'flex',gap:8}}>
+          <a href="/api/audio-analytics/export" download="analisis_audio.xlsx" className="btn-secondary" style={{fontSize:12,textDecoration:'none'}}>⬇ Excel</a>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {allVideos.map(v => (
+              <label key={v.video} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,color:excludedVideos.has(v.video)?'#555':'#eaeaf2',cursor:'pointer',padding:'4px 8px',borderRadius:4,background:excludedVideos.has(v.video)?'transparent':'#1a1a2e',border:'1px solid '+(excludedVideos.has(v.video)?'#333':'#6c5ce7')}}>
+                <input type="checkbox" checked={!excludedVideos.has(v.video)} onChange={() => toggleVideo(v.video)} style={{accentColor:'#6c5ce7'}} />
+                {v.video}
+              </label>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="analytics-cards" style={{gridTemplateColumns:'repeat(4, 1fr)'}}>
@@ -217,9 +240,9 @@ function AudioAnalyticsPage() {
         <h3>Detalle</h3>
         <div style={{overflowX:'auto'}}>
           <table className="data-table">
-            <thead><tr><th>Marca</th><th>Menciones</th><th>Duración (s)</th>{selectedVideo==='all'&&<th>Videos</th>}</tr></thead>
+            <thead><tr><th>Marca</th><th>Menciones</th><th>Duración (s)</th>{videos.length>1&&<th>Videos</th>}</tr></thead>
             <tbody>{brands.map((b,i) => (
-              <tr key={i}><td>{b.label}</td><td>{(b.mentions||0).toLocaleString()}</td><td>{b.duration||0}</td>{selectedVideo==='all'&&<td>{b.videos||'-'}</td>}</tr>
+              <tr key={i}><td>{b.label}</td><td>{(b.mentions||0).toLocaleString()}</td><td>{b.duration||0}</td>{videos.length>1&&<td>{b.videos||'-'}</td>}</tr>
             ))}</tbody>
           </table>
         </div>
@@ -232,19 +255,47 @@ function AudioAnalyticsPage() {
 function VideoAnalyticsPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedVideo, setSelectedVideo] = useState('all');
+  const [excludedVideos, setExcludedVideos] = useState(new Set());
 
   useEffect(() => {
-    api('/api/video-analytics').then(r => { setData(r); setLoading(false); });
+    api('/api/video-analytics').then(r => { 
+      setData(r); setLoading(false);
+      const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
+      const v = params.get('v');
+      if (v && r?.videos) {
+        const others = r.videos.filter(vid => vid.video !== v).map(vid => vid.video);
+        setExcludedVideos(new Set(others));
+      }
+    });
   }, []);
 
   if (loading) return <div className="page"><div className="loading">Cargando análisis...</div></div>;
   if (!data || !data.videos?.length) return <div className="page"><div className="page-header"><h1>Análisis Video</h1></div><p className="empty-text">No hay resultados de inferencia. Ejecuta la inferencia desde Procesamiento.</p></div>;
 
-  const kpis = data.kpis || {};
-  const videos = data.videos || [];
-  const brands = selectedVideo === 'all' ? data.brand_summary || [] :
-    (videos.find(v => v.video === selectedVideo)?.brands || []).map(b => ({label: b.label, detections: b.detections, time_seconds: b.time_seconds}));
+  const allVideos = data.videos || [];
+  const videos = allVideos.filter(v => !excludedVideos.has(v.video));
+  const toggleVideo = (name) => {
+    const next = new Set(excludedVideos);
+    next.has(name) ? next.delete(name) : next.add(name);
+    setExcludedVideos(next);
+  };
+  // Aggregate brands from selected videos
+  const brandMap = {};
+  videos.forEach(v => v.brands?.forEach(b => {
+    if (!brandMap[b.label]) brandMap[b.label] = {label:b.label, detections:0, frames:0, time_seconds:0, avg_when_present:0, avg_total:0, time_percent:0, count:0};
+    brandMap[b.label].detections += (b.detections||0);
+    brandMap[b.label].frames += (b.frames||0);
+    brandMap[b.label].time_seconds += (b.time_seconds||0);
+    brandMap[b.label].count++;
+  }));
+  const brands = Object.values(brandMap).sort((a,b) => b.detections - a.detections);
+  const kpis = {
+    total_videos: videos.length,
+    total_brands: brands.length,
+    total_detections: brands.reduce((s,b) => s + b.detections, 0),
+    total_time_seconds: brands.reduce((s,b) => s + b.time_seconds, 0),
+    total_time_minutes: Math.round(brands.reduce((s,b) => s + b.time_seconds, 0) / 60 * 10) / 10,
+  };
 
   const chartColors = ['#6c5ce7','#00b894','#e17055','#ffd43b','#3b82f6','#ef4444','#10b981','#f59e0b','#8b5cf6','#ec4899'];
 
@@ -252,11 +303,22 @@ function VideoAnalyticsPage() {
     <div className="page">
       <div className="page-header">
         <div><h1>Análisis Video</h1><p>Detección visual de marcas en videos procesados</p></div>
-        <select value={selectedVideo} onChange={e => setSelectedVideo(e.target.value)}
-          style={{padding:'6px 12px',borderRadius:6,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:13}}>
-          <option value="all">Todos los videos</option>
-          {videos.map(v => <option key={v.video} value={v.video}>{v.video}</option>)}
-        </select>
+        <div style={{display:'flex',gap:8}}>
+          <a href="/api/video-analytics/export" download="analisis_video.xlsx" className="btn-secondary" style={{fontSize:12,textDecoration:'none'}}>⬇ Excel</a>
+          <button className="btn-secondary" style={{fontSize:12}} onClick={async () => {
+            const r = await api('/api/visual-sync-sqlserver', {method:'POST'});
+            if (r?.status==='ok') alert('✓ Sincronizado: '+r.records_synced+' registros de '+r.videos_synced+' videos');
+            else alert('✕ Error: '+(r?.message||'Fallo'));
+          }}>🔄 SQL Server</button>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {allVideos.map(v => (
+              <label key={v.video} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,color:excludedVideos.has(v.video)?'#555':'#eaeaf2',cursor:'pointer',padding:'4px 8px',borderRadius:4,background:excludedVideos.has(v.video)?'transparent':'#1a1a2e',border:'1px solid '+(excludedVideos.has(v.video)?'#333':'#6c5ce7')}}>
+                <input type="checkbox" checked={!excludedVideos.has(v.video)} onChange={() => toggleVideo(v.video)} style={{accentColor:'#6c5ce7'}} />
+                {v.video}
+              </label>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="analytics-cards" style={{gridTemplateColumns:'repeat(5, 1fr)'}}>
@@ -288,7 +350,7 @@ function VideoAnalyticsPage() {
               <Pie data={brands.map((b,i) => ({...b, fill: chartColors[i % chartColors.length]}))} dataKey="detections" nameKey="label" cx="50%" cy="50%" outerRadius={80} label={({label,percent}) => label + ' ' + (percent*100).toFixed(0) + '%'}>
                 {brands.map((b,i) => <Cell key={i} fill={chartColors[i % chartColors.length]} />)}
               </Pie>
-              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} />
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} formatter={(value) => value.toLocaleString()} />
             </PieChart>
           </ResponsiveContainer>
         </div>
@@ -307,7 +369,7 @@ function VideoAnalyticsPage() {
         </ResponsiveContainer>
       </div>
 
-      {selectedVideo === 'all' && videos.length > 1 && (
+      {videos.length > 1 && (
         <div className="card" style={{marginTop:16}}>
           <h3>Detecciones por Video</h3>
           <ResponsiveContainer width="100%" height={250}>
@@ -326,9 +388,9 @@ function VideoAnalyticsPage() {
         <h3>Detalle por Marca</h3>
         <div style={{overflowX:'auto'}}>
           <table className="data-table">
-            <thead><tr><th>Marca</th><th>Detecciones</th><th>Tiempo (s)</th>{selectedVideo==='all'&&<th>Videos</th>}</tr></thead>
+            <thead><tr><th>Marca</th><th>Detecciones</th><th>Tiempo (s)</th>{videos.length>1&&<th>Videos</th>}</tr></thead>
             <tbody>{brands.map((b,i) => (
-              <tr key={i}><td>{b.label}</td><td>{(b.detections||0).toLocaleString()}</td><td>{(b.frames||0).toLocaleString()}</td><td>{b.avg_when_present||0}</td><td>{b.avg_total||0}</td><td>{b.time_seconds||0}</td><td>{b.time_percent||0}%</td>{selectedVideo==='all'&&<td>{b.videos||'-'}</td>}</tr>
+              <tr key={i}><td>{b.label}</td><td>{(b.detections||0).toLocaleString()}</td><td>{(b.frames||0).toLocaleString()}</td><td>{b.avg_when_present||0}</td><td>{b.avg_total||0}</td><td>{b.time_seconds||0}</td><td>{b.time_percent||0}%</td>{videos.length>1&&<td>{b.videos||'-'}</td>}</tr>
             ))}</tbody>
           </table>
         </div>
@@ -1611,6 +1673,7 @@ function VideosPage() {
                 <button className="btn-sm btn-secondary" onClick={() => loadTranscription(v.name)}>📝 Transcripción</button>
                 <button className="btn-sm btn-secondary" onClick={() => loadMentions(v.name)}>📋 Menciones</button>
                 <button className="btn-sm btn-primary" onClick={() => loadAnalytics(v.name)}>📊 Analítica</button>
+                <button className="btn-sm btn-secondary" onClick={() => window.location.hash='/analytics-video?v='+encodeURIComponent(v.name.replace(/\.[^.]+$/,''))}>📈 Analítica Video</button>
                 <button className="btn-sm btn-secondary" onClick={async () => { const r = await api(`/api/videos/${encodeURIComponent(v.name)}/sync-sqlserver`, {method:'POST'}); alert(r?.status === 'ok' ? `✓ Sincronizado: ${r.mentions} menciones, ${r.segments} segmentos` : `✕ Error: ${r?.message || 'No se pudo conectar'}`); }}>🔄 SQL Server</button>
               </div>
             )}

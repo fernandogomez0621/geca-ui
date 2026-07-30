@@ -2297,20 +2297,23 @@ def get_audio_analytics(user: User = Depends(get_current_user)):
         try:
             with open(mentions_path) as f:
                 mentions_data = _json.load(f)
+            brands_dict = mentions_data.get("brands", {})
+            video_duration = mentions_data.get("duration", 0)
             brands = []
-            for m in mentions_data:
-                brand = m.get("brand", m.get("marca", ""))
-                count = m.get("count", m.get("menciones", 0))
-                dur = m.get("total_duration", m.get("duracion_total", 0))
-                brands.append({"label": brand, "mentions": count, "duration": round(float(dur), 2)})
+            for brand_name, brand_data in brands_dict.items():
+                count = brand_data.get("count", 0)
+                dur = brand_data.get("total_duration", 0)
+                brands.append({"label": brand_name, "mentions": count, "duration": round(float(dur), 2)})
                 total_mentions += count
                 total_duration += float(dur)
-                if brand not in brand_totals:
-                    brand_totals[brand] = {"mentions": 0, "duration": 0, "videos": 0}
-                brand_totals[brand]["mentions"] += count
-                brand_totals[brand]["duration"] += float(dur)
-                brand_totals[brand]["videos"] += 1
-            videos.append({"video": vdir, "brands": brands, "total_mentions": sum(b["mentions"] for b in brands)})
+                if brand_name not in brand_totals:
+                    brand_totals[brand_name] = {"mentions": 0, "duration": 0, "videos": 0}
+                brand_totals[brand_name]["mentions"] += count
+                brand_totals[brand_name]["duration"] += float(dur)
+                brand_totals[brand_name]["videos"] += 1
+            brands.sort(key=lambda x: -x["mentions"])
+            videos.append({"video": vdir, "brands": brands, "total_mentions": sum(b["mentions"] for b in brands),
+                           "duration": round(video_duration, 1)})
         except Exception:
             continue
 
@@ -2327,3 +2330,176 @@ def get_audio_analytics(user: User = Depends(get_current_user)):
             "total_duration": round(total_duration, 1),
         }
     }
+
+
+@app.get("/api/video-analytics/export")
+def export_video_analytics(user: User = Depends(get_current_user)):
+    """Export video analytics to Excel"""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    data = get_video_analytics(user)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Análisis Video"
+    hf = Font(bold=True, color="FFFFFF", size=11)
+    hfill = PatternFill(start_color="2E3440", end_color="2E3440", fill_type="solid")
+    b = Border(left=Side(style="thin",color="CCCCCC"), right=Side(style="thin",color="CCCCCC"),
+               top=Side(style="thin",color="CCCCCC"), bottom=Side(style="thin",color="CCCCCC"))
+    headers = ["Marca", "Detecciones", "Tiempo (s)", "Videos"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.font, c.fill, c.alignment, c.border = hf, hfill, Alignment(horizontal="center"), b
+    for ri, brand in enumerate(data.get("brand_summary", []), 2):
+        for col, key in enumerate(["label", "detections", "time_seconds", "videos"], 1):
+            c = ws.cell(row=ri, column=col, value=brand.get(key, 0))
+            c.border = b
+    for col in ["A","B","C","D"]: ws.column_dimensions[col].width = 20
+    # Per video sheets
+    for v in data.get("videos", []):
+        vs = wb.create_sheet(title=v["video"][:31])
+        headers2 = ["Marca", "Detecciones", "Frames", "Media Aparece", "Media Total", "Tiempo (s)", "Tiempo (%)"]
+        for col, h in enumerate(headers2, 1):
+            c = vs.cell(row=1, column=col, value=h)
+            c.font, c.fill, c.alignment, c.border = hf, hfill, Alignment(horizontal="center"), b
+        for ri, br in enumerate(v.get("brands", []), 2):
+            vals = [br.get("label",""), br.get("detections",0), br.get("frames",0), br.get("avg_when_present",0),
+                    br.get("avg_total",0), br.get("time_seconds",0), br.get("time_percent",0)]
+            for col, val in enumerate(vals, 1):
+                c = vs.cell(row=ri, column=col, value=val)
+                c.border = b
+        for col in "ABCDEFG": vs.column_dimensions[col].width = 18
+    path = "/tmp/analisis_video.xlsx"
+    wb.save(path)
+    return FileResponse(path, filename="analisis_video.xlsx", media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/audio-analytics/export")
+def export_audio_analytics(user: User = Depends(get_current_user)):
+    """Export audio analytics to Excel"""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    data = get_audio_analytics(user)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Análisis Audio"
+    hf = Font(bold=True, color="FFFFFF", size=11)
+    hfill = PatternFill(start_color="2E3440", end_color="2E3440", fill_type="solid")
+    b = Border(left=Side(style="thin",color="CCCCCC"), right=Side(style="thin",color="CCCCCC"),
+               top=Side(style="thin",color="CCCCCC"), bottom=Side(style="thin",color="CCCCCC"))
+    headers = ["Marca", "Menciones", "Duración (s)", "Videos"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.font, c.fill, c.alignment, c.border = hf, hfill, Alignment(horizontal="center"), b
+    for ri, brand in enumerate(data.get("brand_summary", []), 2):
+        for col, key in enumerate(["label", "mentions", "duration", "videos"], 1):
+            c = ws.cell(row=ri, column=col, value=brand.get(key, 0))
+            c.border = b
+    for col in ["A","B","C","D"]: ws.column_dimensions[col].width = 20
+    for v in data.get("videos", []):
+        vs = wb.create_sheet(title=v["video"][:31])
+        headers2 = ["Marca", "Menciones", "Duración (s)"]
+        for col, h in enumerate(headers2, 1):
+            c = vs.cell(row=1, column=col, value=h)
+            c.font, c.fill, c.alignment, c.border = hf, hfill, Alignment(horizontal="center"), b
+        for ri, br in enumerate(v.get("brands", []), 2):
+            vals = [br.get("label",""), br.get("mentions",0), br.get("duration",0)]
+            for col, val in enumerate(vals, 1):
+                c = vs.cell(row=ri, column=col, value=val)
+                c.border = b
+        for col in "ABC": vs.column_dimensions[col].width = 20
+    path = "/tmp/analisis_audio.xlsx"
+    wb.save(path)
+    return FileResponse(path, filename="analisis_audio.xlsx", media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ==============================================
+#  VISUAL DETECTION SYNC TO SQL SERVER
+# ==============================================
+
+@app.post("/api/visual-sync-sqlserver")
+def sync_visual_to_sqlserver(user: User = Depends(get_current_user)):
+    """Sync all visual detection results (from Excel) to SQL Server"""
+    import openpyxl
+
+    conn = get_mssql_conn()
+    if not conn:
+        return {"status": "error", "message": "No SQL Server connection"}
+
+    results_dir = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), "results")
+    if not os.path.isdir(results_dir):
+        return {"status": "error", "message": "No results directory"}
+
+    try:
+        cursor = conn.cursor()
+
+        # Create table if not exists
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='geca_visual_detections' AND xtype='U')
+            CREATE TABLE dbo.geca_visual_detections (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                video_name NVARCHAR(255) NOT NULL,
+                label NVARCHAR(100) NOT NULL,
+                total_detections INT DEFAULT 0,
+                frames_with_detection INT DEFAULT 0,
+                avg_when_present FLOAT DEFAULT 0,
+                avg_total FLOAT DEFAULT 0,
+                time_on_screen_seconds FLOAT DEFAULT 0,
+                time_percent FLOAT DEFAULT 0,
+                synced_at DATETIME DEFAULT GETDATE()
+            )
+        """)
+
+        total_synced = 0
+        videos_synced = 0
+
+        for f in sorted(os.listdir(results_dir)):
+            if not f.endswith("_metrics.xlsx"):
+                continue
+            video_name = f.replace("_metrics.xlsx", "")
+
+            try:
+                wb = openpyxl.load_workbook(os.path.join(results_dir, f), read_only=True)
+                ws = wb.active
+                rows = list(ws.iter_rows(min_row=2, values_only=True))
+                wb.close()
+
+                # Delete old data for this video
+                cursor.execute("DELETE FROM dbo.geca_visual_detections WHERE video_name = %s", (video_name,))
+
+                for row in rows:
+                    if not row or not row[0] or str(row[0]).startswith("Frames"):
+                        continue
+                    cursor.execute("""
+                        INSERT INTO dbo.geca_visual_detections
+                        (video_name, label, total_detections, frames_with_detection,
+                         avg_when_present, avg_total, time_on_screen_seconds, time_percent)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        video_name,
+                        str(row[0]),
+                        int(row[1] or 0),
+                        int(row[2] or 0),
+                        float(row[3] or 0),
+                        float(row[4] or 0),
+                        float(row[5] or 0),
+                        float(row[6] or 0),
+                    ))
+                    total_synced += 1
+                videos_synced += 1
+
+            except Exception as e:
+                print(f"Error processing {f}: {e}")
+                continue
+
+        conn.commit()
+        conn.close()
+        return {
+            "status": "ok",
+            "videos_synced": videos_synced,
+            "records_synced": total_synced,
+        }
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return {"status": "error", "message": str(e)}
