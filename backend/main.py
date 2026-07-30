@@ -2136,3 +2136,194 @@ def run_pre_annotate(task_id, model_path, conf, cfg):
 
     except Exception as e:
         pre_annotate_progress[task_id] = {"running": False, "current": 0, "total": 0, "annotations": 0, "status": f"error: {str(e)}"}
+
+# ==============================================
+#  GPU WORKER PROXY (training, inference, video)
+# ==============================================
+
+WORKER_URL = os.getenv("WORKER_URL", "http://geca_worker:8002")
+
+
+@app.get("/api/worker/health")
+def worker_health(user: User = Depends(get_current_user)):
+    try:
+        r = httpx.get(f"{WORKER_URL}/health", timeout=5)
+        return r.json()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/worker/train")
+def worker_train(data: dict, user: User = Depends(get_current_user)):
+    try:
+        r = httpx.post(f"{WORKER_URL}/train", json=data, timeout=30)
+        return r.json()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/worker/inference")
+def worker_inference(data: dict, user: User = Depends(get_current_user)):
+    try:
+        r = httpx.post(f"{WORKER_URL}/inference", json=data, timeout=30)
+        return r.json()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/worker/video-annotate")
+def worker_video_annotate(data: dict, user: User = Depends(get_current_user)):
+    try:
+        r = httpx.post(f"{WORKER_URL}/video-annotate", json=data, timeout=30)
+        return r.json()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/worker/tasks/{task_id}")
+def worker_task_progress(task_id: str, user: User = Depends(get_current_user)):
+    try:
+        r = httpx.get(f"{WORKER_URL}/tasks/{task_id}", timeout=10)
+        return r.json()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/videos-list")
+def list_videos(user: User = Depends(get_current_user)):
+    """List available videos for processing"""
+    videos_dir = os.path.join(SHARED_DIR, "videos")
+    videos = []
+    if os.path.isdir(videos_dir):
+        for f in sorted(os.listdir(videos_dir)):
+            if f.lower().endswith(('.mp4', '.ts', '.avi', '.mkv')):
+                fp = os.path.join(videos_dir, f)
+                size_mb = os.path.getsize(fp) / 1_000_000
+                videos.append({"name": f, "size_mb": round(size_mb, 1), "path": fp})
+    return {"videos": videos}
+
+
+# ==============================================
+#  VIDEO ANALYTICS
+# ==============================================
+
+@app.get("/api/video-analytics")
+def get_video_analytics(user: User = Depends(get_current_user)):
+    """Aggregate video detection metrics from Excel results"""
+    import openpyxl
+    results_dir = os.path.join(SHARED_DIR, "results")
+    if not os.path.isdir(results_dir):
+        return {"videos": [], "summary": {}}
+
+    videos = []
+    brand_totals = {}
+    total_detections = 0
+    total_time = 0
+
+    for f in sorted(os.listdir(results_dir)):
+        if not f.endswith("_metrics.xlsx"):
+            continue
+        video_name = f.replace("_metrics.xlsx", "")
+        try:
+            wb = openpyxl.load_workbook(os.path.join(results_dir, f), read_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(min_row=2, values_only=True))
+            wb.close()
+            brands = []
+            for row in rows:
+                if not row or not row[0]:
+                    continue
+                brand = {
+                    "label": row[0],
+                    "detections": row[1] or 0,
+                    "frames": row[2] or 0,
+                    "avg_when_present": round(float(row[3] or 0), 2),
+                    "avg_total": round(float(row[4] or 0), 2),
+                    "time_seconds": float(row[5] or 0),
+                    "time_percent": round(float(row[6] or 0), 2),
+                }
+                brands.append(brand)
+                total_detections += brand["detections"]
+                total_time += brand["time_seconds"]
+                if brand["label"] not in brand_totals:
+                    brand_totals[brand["label"]] = {"detections": 0, "time_seconds": 0, "videos": 0}
+                brand_totals[brand["label"]]["detections"] += brand["detections"]
+                brand_totals[brand["label"]]["time_seconds"] += brand["time_seconds"]
+                brand_totals[brand["label"]]["videos"] += 1
+
+            videos.append({"video": video_name, "brands": brands, "total_brands": len(brands),
+                           "total_detections": sum(b["detections"] for b in brands)})
+        except Exception:
+            continue
+
+    # Summary
+    brand_summary = [{"label": k, "detections": v["detections"], "time_seconds": round(v["time_seconds"], 1),
+                       "videos": v["videos"]} for k, v in sorted(brand_totals.items(), key=lambda x: -x[1]["detections"])]
+
+    return {
+        "videos": videos,
+        "brand_summary": brand_summary,
+        "kpis": {
+            "total_videos": len(videos),
+            "total_brands": len(brand_totals),
+            "total_detections": total_detections,
+            "total_time_seconds": round(total_time, 1),
+            "total_time_minutes": round(total_time / 60, 1),
+        }
+    }
+
+
+# ==============================================
+#  AUDIO ANALYTICS (aggregated)
+# ==============================================
+
+@app.get("/api/audio-analytics")
+def get_audio_analytics(user: User = Depends(get_current_user)):
+    """Aggregate audio mention metrics across all videos"""
+    audio_dir = os.path.join(SHARED_DIR, "audio")
+    if not os.path.isdir(audio_dir):
+        return {"videos": [], "kpis": {}}
+
+    import json as _json
+    videos = []
+    brand_totals = {}
+    total_mentions = 0
+    total_duration = 0
+
+    for vdir in sorted(os.listdir(audio_dir)):
+        mentions_path = os.path.join(audio_dir, vdir, "brand_mentions.json")
+        if not os.path.exists(mentions_path):
+            continue
+        try:
+            with open(mentions_path) as f:
+                mentions_data = _json.load(f)
+            brands = []
+            for m in mentions_data:
+                brand = m.get("brand", m.get("marca", ""))
+                count = m.get("count", m.get("menciones", 0))
+                dur = m.get("total_duration", m.get("duracion_total", 0))
+                brands.append({"label": brand, "mentions": count, "duration": round(float(dur), 2)})
+                total_mentions += count
+                total_duration += float(dur)
+                if brand not in brand_totals:
+                    brand_totals[brand] = {"mentions": 0, "duration": 0, "videos": 0}
+                brand_totals[brand]["mentions"] += count
+                brand_totals[brand]["duration"] += float(dur)
+                brand_totals[brand]["videos"] += 1
+            videos.append({"video": vdir, "brands": brands, "total_mentions": sum(b["mentions"] for b in brands)})
+        except Exception:
+            continue
+
+    brand_summary = [{"label": k, "mentions": v["mentions"], "duration": round(v["duration"], 2),
+                       "videos": v["videos"]} for k, v in sorted(brand_totals.items(), key=lambda x: -x[1]["mentions"])]
+
+    return {
+        "videos": videos,
+        "brand_summary": brand_summary,
+        "kpis": {
+            "total_videos": len(videos),
+            "total_brands": len(brand_totals),
+            "total_mentions": total_mentions,
+            "total_duration": round(total_duration, 1),
+        }
+    }

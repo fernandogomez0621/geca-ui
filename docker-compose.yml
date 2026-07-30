@@ -89,6 +89,29 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
+  geca_worker:
+    image: quay.io/jupyter/pytorch-notebook:cuda12-pytorch-2.6.0
+    container_name: geca_worker
+    user: root
+    ports:
+      - "8002:8002"
+    shm_size: '8g'
+    volumes:
+      - /mnt/shared:/mnt/shared
+      - ./worker:/app
+    working_dir: /app
+    environment:
+      SHARED_DIR: /mnt/shared
+    command: bash -c "pip install -q fastapi uvicorn ultralytics openpyxl matplotlib && python worker.py"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
   geca_mlflow:
     image: python:3.11-slim
     container_name: geca_mlflow

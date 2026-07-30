@@ -51,7 +51,7 @@ function LoginPage() {
 // === LAYOUT ===
 function Layout({ children }) {
   const { user, logout } = useAuth(); const location = useLocation();
-  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/datasets', label: 'Datasets', icon: '◫' }, { path: '/results', label: 'Resultados', icon: '◉' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
+  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/datasets', label: 'Datasets', icon: '◫' }, { path: '/processing', label: 'Procesamiento', icon: '⚙' }, { path: '/results', label: 'Resultados', icon: '◉' }, { path: '/analytics-audio', label: 'Análisis Audio', icon: '♪' }, { path: '/analytics-video', label: 'Análisis Video', icon: '◈' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
   if (user?.role === 'admin') navItems.push({ path: '/users', label: 'Usuarios', icon: '◇' });
   return (
     <div className="app-layout">
@@ -131,6 +131,381 @@ function ContextsPage() {
     <div className="page"><div className="page-header"><div><h1>Contextos</h1><p>Superficies donde aparecen las marcas</p></div><button className="btn-primary" onClick={() => setShowForm(!showForm)}>+ Nuevo Contexto</button></div>
       {showForm && (<div className="card form-card"><h3>Nuevo Contexto</h3><form onSubmit={create}><div className="form-row"><div className="form-group" style={{maxWidth: 80}}><label>Icono</label><input placeholder="👕" value={form.icon} onChange={e => setForm({...form, icon: e.target.value})} /></div><div className="form-group"><label>Nombre</label><input placeholder="camiseta" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div><div className="form-group" style={{flex: 2}}><label>Descripción</label><input placeholder="Logo en camiseta de jugador" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div></div><div className="form-actions"><button type="submit" className="btn-primary">Crear</button><button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancelar</button></div></form></div>)}
       <div className="contexts-grid">{contexts.map(ctx => (<div className="card context-card" key={ctx.id}><div className="context-icon">{ctx.icon || '▦'}</div><h3>{ctx.name}</h3><p>{ctx.description || 'Sin descripción'}</p><button className="btn-icon btn-danger-icon" onClick={() => remove(ctx.id)}>✕</button></div>))}</div>
+    </div>
+  );
+}
+
+// === AUDIO ANALYTICS PAGE ===
+function AudioAnalyticsPage() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedVideo, setSelectedVideo] = useState('all');
+
+  useEffect(() => {
+    api('/api/audio-analytics').then(r => { setData(r); setLoading(false); });
+  }, []);
+
+  if (loading) return <div className="page"><div className="loading">Cargando análisis...</div></div>;
+  if (!data || !data.videos?.length) return <div className="page"><div className="page-header"><h1>Análisis Audio</h1></div><p className="empty-text">No hay datos de audio. Procesa videos desde la sección Videos.</p></div>;
+
+  const kpis = data.kpis || {};
+  const videos = data.videos || [];
+  const brands = selectedVideo === 'all' ? data.brand_summary || [] :
+    (videos.find(v => v.video === selectedVideo)?.brands || []).map(b => ({label: b.label, mentions: b.mentions, duration: b.duration}));
+
+  const chartColors = ['#6c5ce7','#00b894','#e17055','#ffd43b','#3b82f6','#ef4444','#10b981','#f59e0b','#8b5cf6','#ec4899'];
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <div><h1>Análisis Audio</h1><p>Menciones de marcas detectadas por Whisper</p></div>
+        <select value={selectedVideo} onChange={e => setSelectedVideo(e.target.value)}
+          style={{padding:'6px 12px',borderRadius:6,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:13}}>
+          <option value="all">Todos los videos</option>
+          {videos.map(v => <option key={v.video} value={v.video}>{v.video}</option>)}
+        </select>
+      </div>
+
+      <div className="analytics-cards" style={{gridTemplateColumns:'repeat(4, 1fr)'}}>
+        <div className="analytics-card"><div className="analytics-card-value">{kpis.total_videos}</div><div className="analytics-card-label">Videos</div></div>
+        <div className="analytics-card"><div className="analytics-card-value">{kpis.total_brands}</div><div className="analytics-card-label">Marcas</div></div>
+        <div className="analytics-card"><div className="analytics-card-value">{(kpis.total_mentions||0).toLocaleString()}</div><div className="analytics-card-label">Menciones</div></div>
+        <div className="analytics-card"><div className="analytics-card-value">{kpis.total_duration}s</div><div className="analytics-card-label">Duración Total</div></div>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginTop:16}}>
+        <div className="card">
+          <h3>Menciones por Marca</h3>
+          <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+            <BarChart data={brands} layout="vertical" margin={{left:100,right:20}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+              <XAxis type="number" tick={{fill:'#9898b0',fontSize:11}} />
+              <YAxis type="category" dataKey="label" tick={{fill:'#9898b0',fontSize:11}} width={90} />
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} />
+              <Bar dataKey="mentions" fill="#6c5ce7" radius={[0,4,4,0]} name="Menciones" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="card">
+          <h3>Distribución</h3>
+          <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+            <PieChart>
+              <Pie data={brands.map((b,i) => ({...b, fill: chartColors[i % chartColors.length]}))} dataKey="mentions" nameKey="label" cx="50%" cy="50%" outerRadius={80} label={({label,percent}) => label + ' ' + (percent*100).toFixed(0) + '%'}>
+                {brands.map((b,i) => <Cell key={i} fill={chartColors[i % chartColors.length]} />)}
+              </Pie>
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="card" style={{marginTop:16}}>
+        <h3>Duración por Marca (segundos)</h3>
+        <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+          <BarChart data={brands} layout="vertical" margin={{left:100,right:20}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+            <XAxis type="number" tick={{fill:'#9898b0',fontSize:11}} />
+            <YAxis type="category" dataKey="label" tick={{fill:'#9898b0',fontSize:11}} width={90} />
+            <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} />
+            <Bar dataKey="duration" fill="#00b894" radius={[0,4,4,0]} name="Segundos" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="card" style={{marginTop:16}}>
+        <h3>Detalle</h3>
+        <div style={{overflowX:'auto'}}>
+          <table className="data-table">
+            <thead><tr><th>Marca</th><th>Menciones</th><th>Duración (s)</th>{selectedVideo==='all'&&<th>Videos</th>}</tr></thead>
+            <tbody>{brands.map((b,i) => (
+              <tr key={i}><td>{b.label}</td><td>{(b.mentions||0).toLocaleString()}</td><td>{b.duration||0}</td>{selectedVideo==='all'&&<td>{b.videos||'-'}</td>}</tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === VIDEO ANALYTICS PAGE ===
+function VideoAnalyticsPage() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedVideo, setSelectedVideo] = useState('all');
+
+  useEffect(() => {
+    api('/api/video-analytics').then(r => { setData(r); setLoading(false); });
+  }, []);
+
+  if (loading) return <div className="page"><div className="loading">Cargando análisis...</div></div>;
+  if (!data || !data.videos?.length) return <div className="page"><div className="page-header"><h1>Análisis Video</h1></div><p className="empty-text">No hay resultados de inferencia. Ejecuta la inferencia desde Procesamiento.</p></div>;
+
+  const kpis = data.kpis || {};
+  const videos = data.videos || [];
+  const brands = selectedVideo === 'all' ? data.brand_summary || [] :
+    (videos.find(v => v.video === selectedVideo)?.brands || []).map(b => ({label: b.label, detections: b.detections, time_seconds: b.time_seconds}));
+
+  const chartColors = ['#6c5ce7','#00b894','#e17055','#ffd43b','#3b82f6','#ef4444','#10b981','#f59e0b','#8b5cf6','#ec4899'];
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <div><h1>Análisis Video</h1><p>Detección visual de marcas en videos procesados</p></div>
+        <select value={selectedVideo} onChange={e => setSelectedVideo(e.target.value)}
+          style={{padding:'6px 12px',borderRadius:6,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:13}}>
+          <option value="all">Todos los videos</option>
+          {videos.map(v => <option key={v.video} value={v.video}>{v.video}</option>)}
+        </select>
+      </div>
+
+      <div className="analytics-cards" style={{gridTemplateColumns:'repeat(5, 1fr)'}}>
+        <div className="analytics-card"><div className="analytics-card-value">{kpis.total_videos}</div><div className="analytics-card-label">Videos</div></div>
+        <div className="analytics-card"><div className="analytics-card-value">{kpis.total_brands}</div><div className="analytics-card-label">Marcas</div></div>
+        <div className="analytics-card"><div className="analytics-card-value">{(kpis.total_detections||0).toLocaleString()}</div><div className="analytics-card-label">Detecciones</div></div>
+        <div className="analytics-card"><div className="analytics-card-value">{kpis.total_time_minutes}</div><div className="analytics-card-label">Min en Pantalla</div></div>
+        <div className="analytics-card"><div className="analytics-card-value">{brands.length}</div><div className="analytics-card-label">Marcas Activas</div></div>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginTop:16}}>
+        <div className="card">
+          <h3>Detecciones por Marca</h3>
+          <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+            <BarChart data={brands} layout="vertical" margin={{left:100,right:20}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+              <XAxis type="number" tick={{fill:'#9898b0',fontSize:11}} />
+              <YAxis type="category" dataKey="label" tick={{fill:'#9898b0',fontSize:11}} width={90} />
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} />
+              <Bar dataKey="detections" fill="#6c5ce7" radius={[0,4,4,0]} name="Detecciones" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="card">
+          <h3>Distribución de Presencia</h3>
+          <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+            <PieChart>
+              <Pie data={brands.map((b,i) => ({...b, fill: chartColors[i % chartColors.length]}))} dataKey="detections" nameKey="label" cx="50%" cy="50%" outerRadius={80} label={({label,percent}) => label + ' ' + (percent*100).toFixed(0) + '%'}>
+                {brands.map((b,i) => <Cell key={i} fill={chartColors[i % chartColors.length]} />)}
+              </Pie>
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="card" style={{marginTop:16}}>
+        <h3>Tiempo en Pantalla por Marca (segundos)</h3>
+        <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+          <BarChart data={brands} layout="vertical" margin={{left:100,right:20}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+            <XAxis type="number" tick={{fill:'#9898b0',fontSize:11}} />
+            <YAxis type="category" dataKey="label" tick={{fill:'#9898b0',fontSize:11}} width={90} />
+            <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} />
+            <Bar dataKey="time_seconds" fill="#00b894" radius={[0,4,4,0]} name="Segundos" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {selectedVideo === 'all' && videos.length > 1 && (
+        <div className="card" style={{marginTop:16}}>
+          <h3>Detecciones por Video</h3>
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={videos} margin={{left:20,right:20}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+              <XAxis dataKey="video" tick={{fill:'#9898b0',fontSize:10}} angle={-20} textAnchor="end" height={60} />
+              <YAxis tick={{fill:'#9898b0',fontSize:11}} />
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} />
+              <Bar dataKey="total_detections" fill="#e17055" radius={[4,4,0,0]} name="Detecciones" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <div className="card" style={{marginTop:16}}>
+        <h3>Detalle por Marca</h3>
+        <div style={{overflowX:'auto'}}>
+          <table className="data-table">
+            <thead><tr><th>Marca</th><th>Detecciones</th><th>Tiempo (s)</th>{selectedVideo==='all'&&<th>Videos</th>}</tr></thead>
+            <tbody>{brands.map((b,i) => (
+              <tr key={i}><td>{b.label}</td><td>{(b.detections||0).toLocaleString()}</td><td>{b.time_seconds||0}</td>{selectedVideo==='all'&&<td>{b.videos||'-'}</td>}</tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === PROCESSING PAGE ===
+function ProcessingPage() {
+  const [tab, setTab] = useState('train');
+  const [models, setModels] = useState([]);
+  const [datasets, setDatasets] = useState([]);
+  const [videos, setVideos] = useState([]);
+  const [workerStatus, setWorkerStatus] = useState(null);
+  const [taskId, setTaskId] = useState(null);
+  const [progress, setProgress] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [trainDataset, setTrainDataset] = useState('');
+  const [trainModel, setTrainModel] = useState('yolo26m.pt');
+  const [trainEpochs, setTrainEpochs] = useState(100);
+  const [trainBatch, setTrainBatch] = useState(4);
+  const [trainPatience, setTrainPatience] = useState(50);
+  const [trainFreeze, setTrainFreeze] = useState(0);
+  const [trainLr, setTrainLr] = useState(0.01);
+  const [trainMixup, setTrainMixup] = useState(0.0);
+  const [trainCopyPaste, setTrainCopyPaste] = useState(0.0);
+  const [trainExpName, setTrainExpName] = useState('');
+  const [infModel, setInfModel] = useState('');
+  const [infVideo, setInfVideo] = useState('');
+  const [infFps, setInfFps] = useState(10);
+  const [infConf, setInfConf] = useState(0.25);
+  const [vidModel, setVidModel] = useState('');
+  const [vidVideo, setVidVideo] = useState('');
+  const [vidRes, setVidRes] = useState(480);
+  const [vidConf, setVidConf] = useState(0.25);
+  const [vidCrf, setVidCrf] = useState(28);
+
+  const load = () => {
+    api('/api/models').then(r => r && setModels(r.models || []));
+    api('/api/datasets').then(r => r && setDatasets((r.ready || []).map(d => d.folder || d.name)));
+    api('/api/videos-list').then(r => r && setVideos(r.videos || []));
+    api('/api/worker/health').then(r => setWorkerStatus(r));
+  };
+  useEffect(load, []);
+
+  const pollProgress = (tid) => {
+    const interval = setInterval(async () => {
+      const p = await api(`/api/worker/tasks/${tid}`);
+      if (p) {
+        setProgress(p);
+        if (p.status === 'done' || p.status === 'error' || p.status === 'not_found' || (typeof p.status === 'string' && p.status.startsWith('error'))) {
+          clearInterval(interval);
+          setRunning(false);
+          if (p.status === 'done') {
+            if (p.type === 'train') alert(`Entrenamiento completado
+mAP50: ${p.mAP50}
+Modelo: ${p.model_saved}`);
+            else if (p.type === 'inference') alert(`Inferencia completada
+${p.annotations} anotaciones
+Excel: ${p.excel}`);
+            else if (p.type === 'video') alert(`Video generado
+${p.output} (${p.size_mb} MB)`);
+          } else if (p.message) { alert(`Error: ${p.message}`); }
+        }
+      }
+    }, 3000);
+  };
+
+  const startTrain = async () => {
+    if (!trainDataset || running) return;
+    setRunning(true); setProgress(null);
+    const r = await api('/api/worker/train', { method: 'POST', body: JSON.stringify({
+      dataset_name: trainDataset, model_base: trainModel, experiment_name: trainExpName || trainDataset + '_v1',
+      epochs: trainEpochs, batch: trainBatch, patience: trainPatience, freeze: trainFreeze,
+      lr0: trainLr, mixup: trainMixup, copy_paste: trainCopyPaste })});
+    if (r && r.task_id) { setTaskId(r.task_id); pollProgress(r.task_id); }
+    else { setRunning(false); alert('Error: ' + (r && r.message || 'Fallo')); }
+  };
+
+  const startInference = async () => {
+    if (!infModel || !infVideo || running) return;
+    setRunning(true); setProgress(null);
+    const r = await api('/api/worker/inference', { method: 'POST', body: JSON.stringify({
+      model_name: infModel, video_path: '/mnt/shared/videos/' + infVideo, fps_process: infFps, conf: infConf })});
+    if (r && r.task_id) { setTaskId(r.task_id); pollProgress(r.task_id); }
+    else { setRunning(false); alert('Error: ' + (r && r.message || 'Fallo')); }
+  };
+
+  const startVideo = async () => {
+    if (!vidModel || !vidVideo || running) return;
+    setRunning(true); setProgress(null);
+    const r = await api('/api/worker/video-annotate', { method: 'POST', body: JSON.stringify({
+      model_name: vidModel, video_path: '/mnt/shared/videos/' + vidVideo, resolution: vidRes, conf: vidConf, crf: vidCrf })});
+    if (r && r.task_id) { setTaskId(r.task_id); pollProgress(r.task_id); }
+    else { setRunning(false); alert('Error: ' + (r && r.message || 'Fallo')); }
+  };
+
+  const ss = {padding: '6px 10px', borderRadius: 6, background: '#1a1a2e', color: '#eaeaf2', border: '1px solid #2a2a3a', fontSize: 13, width: '100%'};
+  const trainedModels = models.filter(m => m.name.startsWith('geca_'));
+  const baseModels = models.filter(m => m.name.startsWith('yolo'));
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <div><h1>Procesamiento</h1>
+          <p>Entrenamiento, inferencia y video con GPU
+            {workerStatus && workerStatus.cuda ? <span style={{color:'#00b894'}}> — {workerStatus.gpu}</span> : <span style={{color:'#e17055'}}> — Conectando...</span>}
+          </p>
+        </div>
+        <button className="btn-secondary" onClick={load}>↻</button>
+      </div>
+      <div style={{display:'flex',gap:4,marginBottom:16}}>
+        {[['train','Entrenar'],['inference','Inferencia'],['video','Video Anotado']].map(([k,l]) => (
+          <button key={k} onClick={() => setTab(k)} className={tab===k?'btn-primary':'btn-secondary'} style={{fontSize:13}}>{l}</button>
+        ))}
+      </div>
+
+      {running && progress && (
+        <div className="card" style={{marginBottom:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#9898b0',marginBottom:6}}>
+            <span>{progress.status==='training'?'Epoch '+(progress.epoch||0)+' / '+(progress.total_epochs||'?')+' — mAP50: '+(progress.mAP50||'—'):
+              progress.status==='processing'?'Frame '+(progress.current||0)+' / '+(progress.total||'?'):
+              progress.status==='compressing'?'Comprimiendo H.264...':progress.status}</span>
+            <span>{progress.progress?progress.progress+'%':''}</span>
+          </div>
+          <div style={{width:'100%',height:8,backgroundColor:'#1a1a2e',borderRadius:4,overflow:'hidden'}}>
+            <div style={{width:(progress.progress||(progress.total?progress.current/progress.total*100:0))+'%',height:'100%',backgroundColor:'#6c5ce7',borderRadius:4,transition:'width 0.5s'}} />
+          </div>
+          {progress.box_loss && <div style={{fontSize:11,color:'#9898b0',marginTop:6}}>box: {progress.box_loss} · cls: {progress.cls_loss} · mAP50-95: {progress.mAP50_95||'—'}</div>}
+        </div>
+      )}
+
+      {tab==='train' && (
+        <div className="card">
+          <h3 style={{marginBottom:16}}>Entrenar Modelo YOLO26</h3>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div className="form-group"><label>Dataset</label><select value={trainDataset} onChange={e=>setTrainDataset(e.target.value)} style={ss}><option value="">Seleccionar...</option>{datasets.map(d=><option key={d} value={d}>{d}</option>)}</select></div>
+            <div className="form-group"><label>Modelo Base</label><select value={trainModel} onChange={e=>setTrainModel(e.target.value)} style={ss}>{baseModels.map(m=><option key={m.name} value={m.name}>{m.name} ({m.size_mb} MB)</option>)}{trainedModels.length>0&&<optgroup label="Fine-tuning">{trainedModels.map(m=><option key={m.name} value={m.name}>{m.name}</option>)}</optgroup>}</select></div>
+            <div className="form-group"><label>Nombre Experimento</label><input value={trainExpName} onChange={e=>setTrainExpName(e.target.value)} placeholder={(trainDataset||'dataset')+'_v1'} style={ss}/></div>
+            <div className="form-group"><label>Epochs: {trainEpochs}</label><input type="range" min={50} max={500} step={50} value={trainEpochs} onChange={e=>setTrainEpochs(parseInt(e.target.value))}/></div>
+            <div className="form-group"><label>Batch: {trainBatch}</label><input type="range" min={2} max={64} step={2} value={trainBatch} onChange={e=>setTrainBatch(parseInt(e.target.value))}/></div>
+            <div className="form-group"><label>Patience: {trainPatience}</label><input type="range" min={10} max={100} step={10} value={trainPatience} onChange={e=>setTrainPatience(parseInt(e.target.value))}/></div>
+            <div className="form-group"><label>Freeze: {trainFreeze}</label><input type="range" min={0} max={20} step={1} value={trainFreeze} onChange={e=>setTrainFreeze(parseInt(e.target.value))}/></div>
+            <div className="form-group"><label>Learning Rate</label><select value={trainLr} onChange={e=>setTrainLr(parseFloat(e.target.value))} style={ss}><option value={0.01}>0.01 (default)</option><option value={0.005}>0.005</option><option value={0.001}>0.001 (fine-tuning)</option><option value={0.0005}>0.0005</option></select></div>
+            <div className="form-group"><label>Mixup: {trainMixup}</label><input type="range" min={0} max={0.5} step={0.1} value={trainMixup} onChange={e=>setTrainMixup(parseFloat(e.target.value))}/></div>
+            <div className="form-group"><label>Copy-Paste: {trainCopyPaste}</label><input type="range" min={0} max={0.5} step={0.1} value={trainCopyPaste} onChange={e=>setTrainCopyPaste(parseFloat(e.target.value))}/></div>
+          </div>
+          <button className="btn-primary" onClick={startTrain} disabled={!trainDataset||running} style={{marginTop:16}}>{running?'Entrenando...':'Iniciar Entrenamiento'}</button>
+        </div>
+      )}
+
+      {tab==='inference' && (
+        <div className="card">
+          <h3 style={{marginBottom:16}}>Inferencia sobre Video</h3>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div className="form-group"><label>Modelo</label><select value={infModel} onChange={e=>setInfModel(e.target.value)} style={ss}><option value="">Seleccionar...</option>{trainedModels.map(m=><option key={m.name} value={m.name}>{m.name}</option>)}</select></div>
+            <div className="form-group"><label>Video</label><select value={infVideo} onChange={e=>setInfVideo(e.target.value)} style={ss}><option value="">Seleccionar...</option>{videos.map(v=><option key={v.name} value={v.name}>{v.name} ({v.size_mb} MB)</option>)}</select></div>
+            <div className="form-group"><label>FPS: {infFps}</label><input type="range" min={5} max={30} step={5} value={infFps} onChange={e=>setInfFps(parseInt(e.target.value))}/></div>
+            <div className="form-group"><label>Confianza: {infConf}</label><input type="range" min={0.1} max={0.9} step={0.05} value={infConf} onChange={e=>setInfConf(parseFloat(e.target.value))}/></div>
+          </div>
+          <button className="btn-primary" onClick={startInference} disabled={!infModel||!infVideo||running} style={{marginTop:16}}>{running?'Procesando...':'Iniciar Inferencia'}</button>
+        </div>
+      )}
+
+      {tab==='video' && (
+        <div className="card">
+          <h3 style={{marginBottom:16}}>Generar Video Anotado</h3>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div className="form-group"><label>Modelo</label><select value={vidModel} onChange={e=>setVidModel(e.target.value)} style={ss}><option value="">Seleccionar...</option>{trainedModels.map(m=><option key={m.name} value={m.name}>{m.name}</option>)}</select></div>
+            <div className="form-group"><label>Video</label><select value={vidVideo} onChange={e=>setVidVideo(e.target.value)} style={ss}><option value="">Seleccionar...</option>{videos.map(v=><option key={v.name} value={v.name}>{v.name} ({v.size_mb} MB)</option>)}</select></div>
+            <div className="form-group"><label>Resolución</label><select value={vidRes} onChange={e=>setVidRes(parseInt(e.target.value))} style={ss}><option value={480}>480p (streaming)</option><option value={720}>720p (HD)</option><option value={1080}>1080p</option></select></div>
+            <div className="form-group"><label>Confianza: {vidConf}</label><input type="range" min={0.1} max={0.9} step={0.05} value={vidConf} onChange={e=>setVidConf(parseFloat(e.target.value))}/></div>
+          </div>
+          <button className="btn-primary" onClick={startVideo} disabled={!vidModel||!vidVideo||running} style={{marginTop:16}}>{running?'Generando...':'Generar Video'}</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1260,7 +1635,10 @@ function App() {
       <Route path="/contexts" element={<ProtectedRoute><ContextsPage /></ProtectedRoute>} />
       <Route path="/videos" element={<ProtectedRoute><VideosPage /></ProtectedRoute>} />
       <Route path="/datasets" element={<ProtectedRoute><DatasetsPage /></ProtectedRoute>} />
+      <Route path="/processing" element={<ProtectedRoute><ProcessingPage /></ProtectedRoute>} />
       <Route path="/results" element={<ProtectedRoute><ResultsPage /></ProtectedRoute>} />
+      <Route path="/analytics-video" element={<ProtectedRoute><VideoAnalyticsPage /></ProtectedRoute>} />
+      <Route path="/analytics-audio" element={<ProtectedRoute><AudioAnalyticsPage /></ProtectedRoute>} />
       <Route path="/cvat" element={<ProtectedRoute><CVATPage /></ProtectedRoute>} />
       <Route path="/users" element={<ProtectedRoute><UsersPage /></ProtectedRoute>} />
     </Routes></AuthProvider></BrowserRouter>
