@@ -260,7 +260,7 @@ function VideoAnalyticsPage() {
   useEffect(() => {
     api('/api/video-analytics').then(r => { 
       setData(r); setLoading(false);
-      const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
+      const params = new URLSearchParams(window.location.search);
       const v = params.get('v');
       if (v && r?.videos) {
         const others = r.videos.filter(vid => vid.video !== v).map(vid => vid.video);
@@ -282,12 +282,18 @@ function VideoAnalyticsPage() {
   // Aggregate brands from selected videos
   const brandMap = {};
   videos.forEach(v => v.brands?.forEach(b => {
-    if (!brandMap[b.label]) brandMap[b.label] = {label:b.label, detections:0, frames:0, time_seconds:0, avg_when_present:0, avg_total:0, time_percent:0, count:0};
+    if (!brandMap[b.label]) brandMap[b.label] = {label:b.label, detections:0, frames:0, time_seconds:0, avg_when_present:0, avg_total:0, time_percent:0, count:0, total_frames_sum:0};
     brandMap[b.label].detections += (b.detections||0);
     brandMap[b.label].frames += (b.frames||0);
     brandMap[b.label].time_seconds += (b.time_seconds||0);
+    brandMap[b.label].time_percent += (b.time_percent||0);
+    brandMap[b.label].avg_when_present += (b.avg_when_present||0);
+    brandMap[b.label].avg_total += (b.avg_total||0);
     brandMap[b.label].count++;
   }));
+  Object.values(brandMap).forEach(b => {
+    if (b.count > 1) { b.avg_when_present = Math.round(b.avg_when_present / b.count * 100) / 100; b.avg_total = Math.round(b.avg_total / b.count * 100) / 100; b.time_percent = Math.round(b.time_percent / b.count * 100) / 100; }
+  });
   const brands = Object.values(brandMap).sort((a,b) => b.detections - a.detections);
   const kpis = {
     total_videos: videos.length,
@@ -369,6 +375,34 @@ function VideoAnalyticsPage() {
         </ResponsiveContainer>
       </div>
 
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginTop:16}}>
+        <div className="card">
+          <h3>Aparición Promedio (cuando aparece)</h3>
+          <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+            <BarChart data={brands} layout="vertical" margin={{left:100,right:20}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+              <XAxis type="number" tick={{fill:'#9898b0',fontSize:11}} />
+              <YAxis type="category" dataKey="label" tick={{fill:'#9898b0',fontSize:11}} width={90} />
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} />
+              <Bar dataKey="avg_when_present" fill="#e17055" radius={[0,4,4,0]} name="Promedio" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="card">
+          <h3>% Tiempo en Pantalla</h3>
+          <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+            <BarChart data={brands} layout="vertical" margin={{left:100,right:20}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+              <XAxis type="number" tick={{fill:'#9898b0',fontSize:11}} />
+              <YAxis type="category" dataKey="label" tick={{fill:'#9898b0',fontSize:11}} width={90} />
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} formatter={(v) => v + '%'} />
+              <Bar dataKey="time_percent" fill="#ffd43b" radius={[0,4,4,0]} name="%" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
       {videos.length > 1 && (
         <div className="card" style={{marginTop:16}}>
           <h3>Detecciones por Video</h3>
@@ -383,6 +417,34 @@ function VideoAnalyticsPage() {
           </ResponsiveContainer>
         </div>
       )}
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginTop:16}}>
+        <div className="card">
+          <h3>Media de Apariciones (cuando aparece)</h3>
+          <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+            <BarChart data={brands} layout="vertical" margin={{left:100,right:20}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+              <XAxis type="number" tick={{fill:'#9898b0',fontSize:11}} />
+              <YAxis type="category" dataKey="label" tick={{fill:'#9898b0',fontSize:11}} width={90} />
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} />
+              <Bar dataKey="avg_when_present" fill="#e17055" radius={[0,4,4,0]} name="Media Aparece" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="card">
+          <h3>Porcentaje de Tiempo en Pantalla</h3>
+          <ResponsiveContainer width="100%" height={Math.max(200, brands.length * 35)}>
+            <BarChart data={brands} layout="vertical" margin={{left:100,right:20}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" />
+              <XAxis type="number" tick={{fill:'#9898b0',fontSize:11}} unit="%" />
+              <YAxis type="category" dataKey="label" tick={{fill:'#9898b0',fontSize:11}} width={90} />
+              <Tooltip contentStyle={{background:'#15151e',border:'1px solid #2a2a3a',borderRadius:8,color:'#eaeaf2'}} itemStyle={{color:'#eaeaf2'}} labelStyle={{color:'#eaeaf2',fontWeight:'bold'}} formatter={(v) => v + '%'} />
+              <Bar dataKey="time_percent" fill="#ffd43b" radius={[0,4,4,0]} name="% Tiempo" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
 
       <div className="card" style={{marginTop:16}}>
         <h3>Detalle por Marca</h3>
