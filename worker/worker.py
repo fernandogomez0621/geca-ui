@@ -89,18 +89,37 @@ def run_training(task_id, req):
 
         # Custom callback to track progress
         def on_train_epoch_end(trainer):
-            epoch = trainer.epoch + 1
-            metrics = trainer.metrics or {}
-            tasks[task_id].update({
-                "status": "training",
-                "epoch": epoch,
-                "total_epochs": req.epochs,
-                "progress": round(epoch / req.epochs * 100, 1),
-                "box_loss": round(float(trainer.loss_items[0]), 4) if trainer.loss_items is not None else None,
-                "cls_loss": round(float(trainer.loss_items[1]), 4) if trainer.loss_items is not None else None,
-                "mAP50": round(float(metrics.get("metrics/mAP50(B)", 0)), 4),
-                "mAP50_95": round(float(metrics.get("metrics/mAP50-95(B)", 0)), 4),
-            })
+            try:
+                epoch = trainer.epoch + 1
+                metrics = trainer.metrics or {}
+                box_loss = None
+                cls_loss = None
+                try:
+                    if trainer.loss_items is not None:
+                        loss = trainer.loss_items.cpu().numpy() if hasattr(trainer.loss_items, 'cpu') else trainer.loss_items
+                        box_loss = round(float(loss[0]), 4) if len(loss) > 0 else None
+                        cls_loss = round(float(loss[1]), 4) if len(loss) > 1 else None
+                except Exception:
+                    pass
+                mAP50 = 0
+                mAP50_95 = 0
+                try:
+                    mAP50 = round(float(metrics.get("metrics/mAP50(B)", 0)), 4)
+                    mAP50_95 = round(float(metrics.get("metrics/mAP50-95(B)", 0)), 4)
+                except Exception:
+                    pass
+                tasks[task_id].update({
+                    "status": "training",
+                    "epoch": epoch,
+                    "total_epochs": req.epochs,
+                    "progress": round(epoch / req.epochs * 100, 1),
+                    "box_loss": box_loss,
+                    "cls_loss": cls_loss,
+                    "mAP50": mAP50,
+                    "mAP50_95": mAP50_95,
+                })
+            except Exception:
+                pass
 
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
 
