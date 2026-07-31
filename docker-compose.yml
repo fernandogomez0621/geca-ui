@@ -98,6 +98,7 @@ services:
     shm_size: '8g'
     volumes:
       - /mnt/shared:/mnt/shared
+      - /mnt/shared:/home/jovyan/shared
       - ./worker:/app
     working_dir: /app
     environment:
