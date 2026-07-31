@@ -7,6 +7,16 @@ import cv2
 import torch
 
 app = FastAPI()
+
+# Set YOLO defaults
+import os
+os.makedirs("/mnt/shared/runs", exist_ok=True)
+os.environ["YOLO_CONFIG_DIR"] = "/tmp/Ultralytics"
+try:
+    from ultralytics import settings
+    settings.update({"runs_dir": "/mnt/shared/runs", "datasets_dir": "/mnt/shared/datasets"})
+except Exception:
+    pass
 SHARED = os.getenv("SHARED_DIR", "/mnt/shared")
 tasks = {}  # task_id -> progress dict
 
@@ -145,7 +155,7 @@ def run_training(task_id, req):
 
         # Get final metrics
         best_model = YOLO(best_path)
-        metrics = best_model.val()
+        metrics = best_model.val(project=runs_dir, name=exp_name + "_val", exist_ok=True)
 
         tasks[task_id] = {
             "status": "done", "type": "train", "progress": 100,
