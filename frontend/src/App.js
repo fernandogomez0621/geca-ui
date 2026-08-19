@@ -177,7 +177,7 @@ function AudioAnalyticsPage() {
       <div className="page-header">
         <div><h1>Análisis Audio</h1><p>Menciones de marcas detectadas por Whisper</p></div>
         <div style={{display:'flex',gap:8}}>
-          <a href="/api/audio-analytics/export" download="analisis_audio.xlsx" className="btn-secondary" style={{fontSize:12,textDecoration:'none'}}>⬇ Excel</a>
+          <button className="btn-secondary" style={{fontSize:12}} onClick={async()=>{const t=localStorage.getItem('token');const r=await fetch('/api/audio-analytics/export',{headers:{'Authorization':'Bearer '+t}});const b=await r.blob();const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='analisis_audio.xlsx';a.click();URL.revokeObjectURL(u);}}>⬇ Excel</button>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
             {allVideos.map(v => (
               <label key={v.video} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,color:excludedVideos.has(v.video)?'#555':'#eaeaf2',cursor:'pointer',padding:'4px 8px',borderRadius:4,background:excludedVideos.has(v.video)?'transparent':'#1a1a2e',border:'1px solid '+(excludedVideos.has(v.video)?'#333':'#6c5ce7')}}>
@@ -1735,7 +1735,7 @@ function VideosPage() {
                 <button className="btn-sm btn-secondary" onClick={() => loadTranscription(v.name)}>📝 Transcripción</button>
                 <button className="btn-sm btn-secondary" onClick={() => loadMentions(v.name)}>📋 Menciones</button>
                 <button className="btn-sm btn-primary" onClick={() => loadAnalytics(v.name)}>📊 Analítica</button>
-                <button className="btn-sm btn-secondary" onClick={() => window.location.hash='/analytics-video?v='+encodeURIComponent(v.name.replace(/\.[^.]+$/,''))}>📈 Analítica Video</button>
+                <button className="btn-sm btn-secondary" onClick={() => (function(){sessionStorage.setItem('geca_video_filter',v.name.replace(/\.[^.]+$/,''));window.location.href='/analytics-video';})()}>📈 Analítica Video</button>
                 <button className="btn-sm btn-secondary" onClick={async () => { const r = await api(`/api/videos/${encodeURIComponent(v.name)}/sync-sqlserver`, {method:'POST'}); alert(r?.status === 'ok' ? `✓ Sincronizado: ${r.mentions} menciones, ${r.segments} segmentos` : `✕ Error: ${r?.message || 'No se pudo conectar'}`); }}>🔄 SQL Server</button>
               </div>
             )}

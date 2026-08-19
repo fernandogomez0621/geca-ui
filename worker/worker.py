@@ -157,6 +157,27 @@ def run_training(task_id, req):
         best_model = YOLO(best_path)
         metrics = best_model.val(project=runs_dir, name=exp_name + "_val", exist_ok=True)
 
+        # Log to MLflow
+        try:
+            import mlflow
+            mlflow.set_tracking_uri("http://geca_mlflow:5000")
+            mlflow.set_experiment("GECA_Training")
+            with mlflow.start_run(run_name=exp_name):
+                mlflow.log_param("dataset", req.dataset_name)
+                mlflow.log_param("model_base", req.model_base)
+                mlflow.log_param("epochs", req.epochs)
+                mlflow.log_param("batch", req.batch)
+                mlflow.log_param("experiment", exp_name)
+                mlflow.log_metric("mAP50", float(metrics.box.map50))
+                mlflow.log_metric("mAP50-95", float(metrics.box.map))
+                mlflow.log_metric("mAP75", float(metrics.box.map75))
+                try:
+                    mlflow.log_artifact(output_path)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"MLflow logging failed: {e}")
+
         tasks[task_id] = {
             "status": "done", "type": "train", "progress": 100,
             "epoch": req.epochs, "total_epochs": req.epochs,
@@ -287,6 +308,25 @@ def run_inference(task_id, req):
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"{video_name}_presencia.png"), dpi=150, bbox_inches="tight")
         plt.close()
+
+        # Log to MLflow
+        try:
+            import mlflow
+            mlflow.set_tracking_uri("http://geca_mlflow:5000")
+            mlflow.set_experiment("GECA_Inference")
+            with mlflow.start_run(run_name=f"inference_{video_name}"):
+                mlflow.log_param("video", video_name)
+                mlflow.log_param("model", req.model_name)
+                mlflow.log_param("fps", req.fps_process)
+                mlflow.log_param("conf", req.conf)
+                for m in metrics_list:
+                    mlflow.log_metric(f"{m['Etiqueta']}_pct", m["Porcentaje tiempo (%)"])
+                try:
+                    mlflow.log_artifact(excel_path)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"MLflow logging failed: {e}")
 
         tasks[task_id] = {
             "status": "done", "type": "inference", "current": processed, "total": total_to_process,
