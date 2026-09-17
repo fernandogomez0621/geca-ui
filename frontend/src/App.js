@@ -1748,21 +1748,47 @@ function VideosPage() {
               <div className="form-group"><label>Nombre de la tarea</label><input value={cvatTaskName} onChange={e => setCvatTaskName(e.target.value)} /></div>
               <div className="form-group" style={{gridColumn:'1/-1'}}>
               <label>Etiquetas para anotar</label>
-              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>
-                {availableLabels.map(l => (
-                  <label key={l.cvat_label} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,cursor:'pointer',padding:'4px 8px',borderRadius:4,background:cvatLabels.includes(l.cvat_label)?'#6c5ce7':'#1a1a2e',color:cvatLabels.includes(l.cvat_label)?'#fff':'#9898b0',border:'1px solid '+(cvatLabels.includes(l.cvat_label)?'#6c5ce7':'#2a2a3a')}}>
-                    <input type="checkbox" checked={cvatLabels.includes(l.cvat_label)} onChange={() => {
-                      setCvatLabels(prev => prev.includes(l.cvat_label) ? prev.filter(x=>x!==l.cvat_label) : [...prev, l.cvat_label]);
-                    }} style={{display:'none'}} />
-                    {l.cvat_label} <span style={{fontSize:10,opacity:0.6}}>({l.brand})</span>
-                  </label>
-                ))}
+              {(() => {
+                const grouped = {};
+                availableLabels.forEach(l => {
+                  if (!grouped[l.brand]) grouped[l.brand] = [];
+                  grouped[l.brand].push(l);
+                });
+                return Object.entries(grouped).map(([brand, labels]) => {
+                  const allSelected = labels.every(l => cvatLabels.includes(l.cvat_label));
+                  const someSelected = labels.some(l => cvatLabels.includes(l.cvat_label));
+                  return (
+                    <div key={brand} style={{marginBottom:8,padding:'8px 10px',background:'#12121a',borderRadius:6,border:'1px solid #2a2a3a'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,cursor:'pointer'}} onClick={() => {
+                        if (allSelected) {
+                          setCvatLabels(prev => prev.filter(x => !labels.map(l=>l.cvat_label).includes(x)));
+                        } else {
+                          setCvatLabels(prev => [...new Set([...prev, ...labels.map(l=>l.cvat_label)])]);
+                        }
+                      }}>
+                        <input type="checkbox" checked={allSelected} onChange={()=>{}} ref={el => { if (el) el.indeterminate = someSelected && !allSelected; }} style={{accentColor:'#6c5ce7'}} />
+                        <strong style={{fontSize:13,color:'#eaeaf2'}}>{brand}</strong>
+                        <span style={{fontSize:11,color:'#666'}}>({labels.length} etiquetas)</span>
+                      </div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:4,paddingLeft:24}}>
+                        {labels.map(l => (
+                          <label key={l.cvat_label} style={{display:'flex',alignItems:'center',gap:3,fontSize:11,cursor:'pointer',padding:'3px 7px',borderRadius:4,background:cvatLabels.includes(l.cvat_label)?'#6c5ce7':'#1a1a2e',color:cvatLabels.includes(l.cvat_label)?'#fff':'#9898b0',border:'1px solid '+(cvatLabels.includes(l.cvat_label)?'#6c5ce7':'#2a2a3a'),transition:'all 0.15s'}}>
+                            <input type="checkbox" checked={cvatLabels.includes(l.cvat_label)} onChange={() => {
+                              setCvatLabels(prev => prev.includes(l.cvat_label) ? prev.filter(x=>x!==l.cvat_label) : [...prev, l.cvat_label]);
+                            }} style={{display:'none'}} />
+                            {l.cvat_label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+              <div style={{display:'flex',gap:6,marginTop:8}}>
+                <input placeholder="Agregar etiquetas nuevas (separadas por coma)..." value={customLabel} onChange={e=>setCustomLabel(e.target.value)} style={{flex:1,padding:'4px 8px',borderRadius:4,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:12}} onKeyDown={e=>{if(e.key==='Enter'&&customLabel.trim()){e.preventDefault();const newLabels=customLabel.split(',').map(s=>s.trim()).filter(Boolean);setCvatLabels(prev=>[...new Set([...prev,...newLabels])]);setCustomLabel('');}}} />
+                <button className="btn-sm btn-secondary" type="button" onClick={()=>{if(customLabel.trim()){const newLabels=customLabel.split(',').map(s=>s.trim()).filter(Boolean);setCvatLabels(prev=>[...new Set([...prev,...newLabels])]);setCustomLabel('');}}}>+ Agregar</button>
               </div>
-              <div style={{display:'flex',gap:6}}>
-                <input placeholder="Agregar etiqueta nueva..." value={customLabel} onChange={e=>setCustomLabel(e.target.value)} style={{flex:1,padding:'4px 8px',borderRadius:4,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:12}} onKeyDown={e=>{if(e.key==='Enter'&&customLabel.trim()){e.preventDefault();if(!cvatLabels.includes(customLabel.trim())){setCvatLabels(prev=>[...prev,customLabel.trim()]);}setCustomLabel('');}}} />
-                <button className="btn-sm btn-secondary" type="button" onClick={()=>{if(customLabel.trim()&&!cvatLabels.includes(customLabel.trim())){setCvatLabels(prev=>[...prev,customLabel.trim()]);setCustomLabel('');}}}>+ Agregar</button>
-              </div>
-              {cvatLabels.length > 0 && <div style={{marginTop:6,fontSize:11,color:'#9898b0'}}>Seleccionadas: {cvatLabels.join(', ')}</div>}
+              {cvatLabels.length > 0 && <div style={{marginTop:6,fontSize:11,color:'#9898b0'}}>Seleccionadas ({cvatLabels.length}): {cvatLabels.join(', ')}</div>}
               </div>
             </div>
             <div className="form-actions">
