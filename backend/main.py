@@ -2503,3 +2503,168 @@ def sync_visual_to_sqlserver(user: User = Depends(get_current_user)):
         conn.rollback()
         conn.close()
         return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/cvat-labels")
+def get_all_cvat_labels(user: User = Depends(get_current_user)):
+    """Get all unique cvat_labels from subbrands for CVAT task creation"""
+    db = SessionLocal()
+    try:
+        subbrands = db.query(SubBrand).filter(SubBrand.is_active == True).all()
+        labels = []
+        for sb in subbrands:
+            brand_name = sb.brand.display_name if sb.brand else ""
+            context_name = sb.context.name if sb.context else ""
+            labels.append({
+                "cvat_label": sb.cvat_label,
+                "brand": brand_name,
+                "context": context_name,
+            })
+        labels.sort(key=lambda x: x["cvat_label"])
+        return {"labels": labels}
+    finally:
+        db.close()
+
+
+# ==============================================
+#  VIDEO PREPROCESSING (trim/cut segments)
+# ==============================================
+
+@app.get("/api/videos-raw")
+def list_raw_videos(user: User = Depends(get_current_user)):
+    """List raw videos for preprocessing"""
+    raw_dir = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), "videos_raw")
+    os.makedirs(raw_dir, exist_ok=True)
+    videos = []
+    for f in sorted(os.listdir(raw_dir)):
+        if f.lower().endswith(('.mp4', '.ts', '.avi', '.mkv', '.mov')):
+            fp = os.path.join(raw_dir, f)
+            stat = os.stat(fp)
+            size_mb = stat.st_size / 1_000_000
+            # Get duration with ffprobe
+            dur = "?"
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', fp],
+                    capture_output=True, text=True, timeout=10
+                )
+                import json as _json
+                info = _json.loads(result.stdout)
+                secs = float(info.get('format', {}).get('duration', 0))
+                hrs = int(secs // 3600)
+                mins = int((secs % 3600) // 60)
+                sec = int(secs % 60)
+                dur = f"{hrs:02d}:{mins:02d}:{sec:02d}"
+            except Exception:
+                pass
+            videos.append({"name": f, "size_mb": round(size_mb, 1), "duration": dur, "path": fp})
+    return {"videos": videos, "path": raw_dir}
+
+
+class PreprocessRequest(BaseModel):
+    filename: str
+    segments: list  # [{"start": "00:15:00", "end": "00:45:00"}, {"start": "01:00:00", "end": "01:30:00"}]
+    output_name: str = ""
+
+
+@app.post("/api/videos-raw/preprocess")
+def preprocess_video(data: PreprocessRequest, background_tasks: BackgroundTasks, user: User = Depends(get_current_user)):
+    """Cut and join video segments, save to videos/ folder"""
+    raw_dir = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), "videos_raw")
+    videos_dir = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), "videos")
+    input_path = os.path.join(raw_dir, data.filename)
+
+    if not os.path.exists(input_path):
+        return {"status": "error", "message": f"Video no encontrado: {data.filename}"}
+
+    if not data.segments:
+        return {"status": "error", "message": "Debe definir al menos un segmento"}
+
+    output_name = data.output_name or data.filename
+    if not output_name.endswith('.mp4'):
+        output_name = output_name.rsplit('.', 1)[0] + '.mp4'
+
+    task_id = f"preprocess_{int(import_time())}"
+    preprocess_progress[task_id] = {"status": "processing", "progress": 0, "filename": output_name}
+
+    background_tasks.add_task(run_preprocess, task_id, input_path, videos_dir, output_name, data.segments)
+
+    return {"status": "started", "task_id": task_id}
+
+
+def import_time():
+    import time
+    return time.time()
+
+
+preprocess_progress = {}
+
+
+@app.get("/api/videos-raw/preprocess/{task_id}")
+def get_preprocess_progress(task_id: str, user: User = Depends(get_current_user)):
+    return preprocess_progress.get(task_id, {"status": "not_found"})
+
+
+def run_preprocess(task_id, input_path, videos_dir, output_name, segments):
+    import subprocess, tempfile
+    try:
+        output_path = os.path.join(videos_dir, output_name)
+        temp_dir = tempfile.mkdtemp()
+
+        # Cut each segment
+        segment_files = []
+        for i, seg in enumerate(segments):
+            start = seg.get("start", "00:00:00")
+            end = seg.get("end", "")
+            seg_path = os.path.join(temp_dir, f"seg_{i:03d}.mp4")
+
+            cmd = ['ffmpeg', '-i', input_path, '-ss', start]
+            if end:
+                cmd.extend(['-to', end])
+            cmd.extend(['-c', 'copy', '-y', seg_path])
+
+            subprocess.run(cmd, capture_output=True, timeout=600)
+            if os.path.exists(seg_path):
+                segment_files.append(seg_path)
+
+            preprocess_progress[task_id]["progress"] = int((i + 1) / len(segments) * 80)
+
+        if not segment_files:
+            preprocess_progress[task_id] = {"status": "error", "message": "No se pudo cortar ningún segmento"}
+            return
+
+        if len(segment_files) == 1:
+            # Single segment - just copy
+            import shutil
+            shutil.move(segment_files[0], output_path)
+        else:
+            # Multiple segments - concatenate with ffmpeg
+            concat_file = os.path.join(temp_dir, "concat.txt")
+            with open(concat_file, 'w') as f:
+                for sf in segment_files:
+                    f.write(f"file '{sf}'\n")
+
+            preprocess_progress[task_id]["progress"] = 85
+            subprocess.run([
+                'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
+                '-c', 'copy', '-y', output_path
+            ], capture_output=True, timeout=600)
+
+        # Cleanup temp
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        preprocess_progress[task_id]["progress"] = 100
+
+        if os.path.exists(output_path):
+            size_mb = os.path.getsize(output_path) / 1_000_000
+            preprocess_progress[task_id] = {
+                "status": "done", "progress": 100,
+                "filename": output_name, "size_mb": round(size_mb, 1)
+            }
+        else:
+            preprocess_progress[task_id] = {"status": "error", "message": "No se generó el archivo de salida"}
+
+    except Exception as e:
+        preprocess_progress[task_id] = {"status": "error", "message": str(e)}

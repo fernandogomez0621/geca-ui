@@ -51,7 +51,7 @@ function LoginPage() {
 // === LAYOUT ===
 function Layout({ children }) {
   const { user, logout } = useAuth(); const location = useLocation();
-  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/datasets', label: 'Datasets', icon: '◫' }, { path: '/processing', label: 'Procesamiento', icon: '⚙' }, { path: '/results', label: 'Resultados', icon: '◉' }, { path: '/analytics-audio', label: 'Análisis Audio', icon: '♪' }, { path: '/analytics-video', label: 'Análisis Video', icon: '◈' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
+  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/preprocess', label: 'Pre-procesar', icon: '✂' }, { path: '/datasets', label: 'Datasets', icon: '◫' }, { path: '/processing', label: 'Procesamiento', icon: '⚙' }, { path: '/results', label: 'Resultados', icon: '◉' }, { path: '/analytics-audio', label: 'Análisis Audio', icon: '♪' }, { path: '/analytics-video', label: 'Análisis Video', icon: '◈' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
   if (user?.role === 'admin') navItems.push({ path: '/users', label: 'Usuarios', icon: '◇' });
   return (
     <div className="app-layout">
@@ -630,6 +630,151 @@ ${p.output} (${p.size_mb} MB)`);
           <button className="btn-primary" onClick={startVideo} disabled={!vidModel||!vidVideo||running} style={{marginTop:16}}>{running?'Generando...':'Generar Video'}</button>
         </div>
       )}
+    </div>
+  );
+}
+
+// === PREPROCESS PAGE ===
+function PreprocessPage() {
+  const [videos, setVideos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedVideo, setSelectedVideo] = useState(null);
+  const [segments, setSegments] = useState([{start: '00:00:00', end: ''}]);
+  const [outputName, setOutputName] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const [taskId, setTaskId] = useState(null);
+  const [progress, setProgress] = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    api('/api/videos-raw').then(r => { if (r) setVideos(r.videos || []); setLoading(false); });
+  };
+  useEffect(load, []);
+
+  const addSegment = () => setSegments([...segments, {start: '', end: ''}]);
+  const removeSegment = (i) => setSegments(segments.filter((_, idx) => idx !== i));
+  const updateSegment = (i, field, value) => {
+    const next = [...segments];
+    next[i] = {...next[i], [field]: value};
+    setSegments(next);
+  };
+
+  const startPreprocess = async () => {
+    if (!selectedVideo || processing) return;
+    const validSegments = segments.filter(s => s.start);
+    if (validSegments.length === 0) { alert('Defina al menos un segmento'); return; }
+    setProcessing(true);
+    setProgress({status: 'starting', progress: 0});
+    const r = await api('/api/videos-raw/preprocess', {
+      method: 'POST',
+      body: JSON.stringify({
+        filename: selectedVideo.name,
+        segments: validSegments,
+        output_name: outputName || selectedVideo.name
+      })
+    });
+    if (r && r.task_id) {
+      setTaskId(r.task_id);
+      const poll = setInterval(async () => {
+        const p = await api('/api/videos-raw/preprocess/' + r.task_id);
+        if (p) {
+          setProgress(p);
+          if (p.status === 'done' || p.status === 'error') {
+            clearInterval(poll);
+            setProcessing(false);
+            if (p.status === 'done') alert('Video procesado: ' + p.filename + ' (' + p.size_mb + ' MB)');
+            else alert('Error: ' + (p.message || 'Fallo'));
+          }
+        }
+      }, 2000);
+    } else {
+      setProcessing(false);
+      alert('Error: ' + (r && r.message || 'Fallo'));
+    }
+  };
+
+  const ss = {padding:'6px 10px',borderRadius:6,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:13,width:'100%'};
+
+  if (loading) return <div className="page"><div className="loading">Cargando videos...</div></div>;
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <div>
+          <h1>Pre-procesamiento de Video</h1>
+          <p>Recortar segmentos de interés y unirlos en un solo video</p>
+        </div>
+        <button className="btn-secondary" onClick={load}>↻ Actualizar</button>
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <p style={{fontSize:13,color:'#9898b0'}}>Copie los videos originales a la carpeta:</p>
+        <code style={{display:'block',padding:'8px 12px',background:'#1a1a2e',borderRadius:6,fontSize:13,color:'#6c5ce7',marginTop:4}}>
+          \\10.43.13.186\Compartida\videos_raw\
+        </code>
+        <p style={{fontSize:12,color:'#666',marginTop:8}}>Los videos que se coloquen directamente en la carpeta <code>videos</code> se procesan completos sin necesidad de pre-procesamiento.</p>
+      </div>
+
+      {progress && processing && (
+        <div className="card" style={{marginBottom:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#9898b0',marginBottom:6}}>
+            <span>{progress.status === 'done' ? 'Completado' : progress.status === 'error' ? 'Error' : 'Procesando segmentos...'}</span>
+            <span>{progress.progress || 0}%</span>
+          </div>
+          <div style={{width:'100%',height:8,backgroundColor:'#1a1a2e',borderRadius:4,overflow:'hidden'}}>
+            <div style={{width:(progress.progress||0)+'%',height:'100%',backgroundColor:'#6c5ce7',borderRadius:4,transition:'width 0.5s'}} />
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <h3 style={{marginBottom:16}}>Seleccionar Video y Segmentos</h3>
+
+        <div className="form-group" style={{marginBottom:16}}>
+          <label>Video Original</label>
+          <select value={selectedVideo ? selectedVideo.name : ''} onChange={e => {
+            const v = videos.find(v => v.name === e.target.value);
+            setSelectedVideo(v || null);
+            if (v) { setOutputName(v.name); setSegments([{start: '00:00:00', end: v.duration || ''}]); }
+          }} style={ss}>
+            <option value="">Seleccionar...</option>
+            {videos.map(v => <option key={v.name} value={v.name}>{v.name} ({v.size_mb} MB — {v.duration})</option>)}
+          </select>
+        </div>
+
+        {selectedVideo && (<>
+          <div style={{marginBottom:16,padding:'8px 12px',background:'#1a1a2e',borderRadius:6,fontSize:12,color:'#9898b0'}}>
+            Duración total: <strong style={{color:'#eaeaf2'}}>{selectedVideo.duration}</strong> — Defina las franjas horarias que desea conservar. Lo que esté fuera de estos segmentos se descartará.
+          </div>
+
+          {segments.map((seg, i) => (
+            <div key={i} style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
+              <span style={{fontSize:12,color:'#9898b0',minWidth:80}}>Segmento {i+1}:</span>
+              <div className="form-group" style={{flex:1,margin:0}}>
+                <input placeholder="Inicio (HH:MM:SS)" value={seg.start} onChange={e => updateSegment(i, 'start', e.target.value)} style={{...ss,fontSize:12}} />
+              </div>
+              <span style={{color:'#9898b0'}}>→</span>
+              <div className="form-group" style={{flex:1,margin:0}}>
+                <input placeholder="Fin (HH:MM:SS)" value={seg.end} onChange={e => updateSegment(i, 'end', e.target.value)} style={{...ss,fontSize:12}} />
+              </div>
+              {segments.length > 1 && <button className="btn-sm btn-danger" onClick={() => removeSegment(i)}>✕</button>}
+            </div>
+          ))}
+
+          <button className="btn-sm btn-secondary" onClick={addSegment} style={{marginBottom:16}}>+ Agregar segmento</button>
+
+          <div className="form-group" style={{marginBottom:16}}>
+            <label>Nombre del video de salida</label>
+            <input value={outputName} onChange={e => setOutputName(e.target.value)} style={ss} />
+          </div>
+
+          <button className="btn-primary" onClick={startPreprocess} disabled={processing}>
+            {processing ? 'Procesando...' : 'Recortar y Guardar'}
+          </button>
+        </>)}
+
+        {videos.length === 0 && <p className="empty-text">No hay videos en la carpeta videos_raw. Copie los videos originales ahí para pre-procesarlos.</p>}
+      </div>
     </div>
   );
 }
@@ -1239,6 +1384,8 @@ function VideosPage() {
   const [showCvatForm, setShowCvatForm] = useState(false);
   const [cvatTaskName, setCvatTaskName] = useState('');
   const [cvatLabels, setCvatLabels] = useState([]);
+  const [availableLabels, setAvailableLabels] = useState([]);
+  const [customLabel, setCustomLabel] = useState('');
   // Audio state
   const [audioProcessing, setAudioProcessing] = useState(null);
   const [audioStatus, setAudioStatus] = useState(null);
@@ -1588,7 +1735,7 @@ function VideosPage() {
         <div className="page-header">
           <div><h1>Frames: {viewingFrames}</h1><p>{framesTotal} imágenes extraídas</p></div>
           <div style={{display:'flex', gap: 8}}>
-            <button className="btn-primary btn-sm" onClick={() => { setShowCvatForm(true); setCvatTaskName(viewingFrames); }}>📤 Crear tarea CVAT</button>
+            <button className="btn-primary btn-sm" onClick={() => { setShowCvatForm(true); setCvatTaskName(viewingFrames); api('/api/cvat-labels').then(r => r && setAvailableLabels(r.labels || [])); }}>📤 Crear tarea CVAT</button>
             <button className="btn-secondary btn-sm" onClick={() => { setViewingFrames(null); setFrames([]); setSelectedFrames(new Set()); }}>← Volver</button>
           </div>
         </div>
@@ -1599,7 +1746,24 @@ function VideosPage() {
             <p className="empty-text">Los {framesTotal} frames se subirán directamente a CVAT (servidor a servidor, sin pasar por el navegador).</p>
             <div className="form-row" style={{marginTop: 12}}>
               <div className="form-group"><label>Nombre de la tarea</label><input value={cvatTaskName} onChange={e => setCvatTaskName(e.target.value)} /></div>
-              <div className="form-group"><label>Labels (separados por coma)</label><input placeholder="caixabank_valla, caixabank_camiseta" onChange={e => setCvatLabels(e.target.value.split(',').map(s => s.trim()).filter(Boolean))} /></div>
+              <div className="form-group" style={{gridColumn:'1/-1'}}>
+              <label>Etiquetas para anotar</label>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>
+                {availableLabels.map(l => (
+                  <label key={l.cvat_label} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,cursor:'pointer',padding:'4px 8px',borderRadius:4,background:cvatLabels.includes(l.cvat_label)?'#6c5ce7':'#1a1a2e',color:cvatLabels.includes(l.cvat_label)?'#fff':'#9898b0',border:'1px solid '+(cvatLabels.includes(l.cvat_label)?'#6c5ce7':'#2a2a3a')}}>
+                    <input type="checkbox" checked={cvatLabels.includes(l.cvat_label)} onChange={() => {
+                      setCvatLabels(prev => prev.includes(l.cvat_label) ? prev.filter(x=>x!==l.cvat_label) : [...prev, l.cvat_label]);
+                    }} style={{display:'none'}} />
+                    {l.cvat_label} <span style={{fontSize:10,opacity:0.6}}>({l.brand})</span>
+                  </label>
+                ))}
+              </div>
+              <div style={{display:'flex',gap:6}}>
+                <input placeholder="Agregar etiqueta nueva..." value={customLabel} onChange={e=>setCustomLabel(e.target.value)} style={{flex:1,padding:'4px 8px',borderRadius:4,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:12}} onKeyDown={e=>{if(e.key==='Enter'&&customLabel.trim()){e.preventDefault();if(!cvatLabels.includes(customLabel.trim())){setCvatLabels(prev=>[...prev,customLabel.trim()]);}setCustomLabel('');}}} />
+                <button className="btn-sm btn-secondary" type="button" onClick={()=>{if(customLabel.trim()&&!cvatLabels.includes(customLabel.trim())){setCvatLabels(prev=>[...prev,customLabel.trim()]);setCustomLabel('');}}}>+ Agregar</button>
+              </div>
+              {cvatLabels.length > 0 && <div style={{marginTop:6,fontSize:11,color:'#9898b0'}}>Seleccionadas: {cvatLabels.join(', ')}</div>}
+              </div>
             </div>
             <div className="form-actions">
               <button className="btn-primary btn-sm" onClick={createCvatTask} disabled={cvatCreating}>{cvatCreating ? '⏳ Creando tarea y subiendo frames...' : 'Crear y subir frames'}</button>
@@ -1759,6 +1923,7 @@ function App() {
       <Route path="/brands" element={<ProtectedRoute><BrandsPage /></ProtectedRoute>} />
       <Route path="/contexts" element={<ProtectedRoute><ContextsPage /></ProtectedRoute>} />
       <Route path="/videos" element={<ProtectedRoute><VideosPage /></ProtectedRoute>} />
+      <Route path="/preprocess" element={<ProtectedRoute><PreprocessPage /></ProtectedRoute>} />
       <Route path="/datasets" element={<ProtectedRoute><DatasetsPage /></ProtectedRoute>} />
       <Route path="/processing" element={<ProtectedRoute><ProcessingPage /></ProtectedRoute>} />
       <Route path="/results" element={<ProtectedRoute><ResultsPage /></ProtectedRoute>} />

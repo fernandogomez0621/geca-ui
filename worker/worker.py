@@ -391,7 +391,7 @@ def run_video_annotate(task_id, req):
         def draw_and_write(batch_list):
             nonlocal processed
             if not batch_list: return
-            results = model(batch_list, conf=req.conf, imgsz=640, verbose=False)
+            results = model.track(batch_list, conf=req.conf, imgsz=640, verbose=False, persist=True)
             sx, sy = out_w / orig_w, out_h / orig_h
             for result, frame in zip(results, batch_list):
                 out = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA) if ratio < 1 else frame.copy()
