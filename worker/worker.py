@@ -414,48 +414,54 @@ def run_inference(task_id, req):
         # Prioridad 2: frames con detecciones de confianza dudosa
         review_saved = 0
         review_folder = f"{video_name}_revision"
-        if req.review_frames > 0 and frame_sets:
-            missed = set()
-            for cn, pres in smoothed.items():
-                for k, v in enumerate(pres):
-                    if v and cn not in frame_sets[k]:
-                        missed.add(k)
-            fps_cand = set(k for ks in discarded.values() for k in ks) - missed
-            low = [k for k, v in enumerate(lowconf) if v and k not in missed and k not in fps_cand]
-            min_gap = max(1, int(2 * eff_fps))   # al menos 2 s entre frames elegidos
-            chosen = []
-            def pick(cands):
-                for k in cands:
-                    if len(chosen) >= req.review_frames: return
-                    if all(abs(k - x) >= min_gap for x in chosen):
-                        chosen.append(k)
-            pick(sorted(missed))
-            pick(sorted(fps_cand))
-            # repartir los dudosos a lo largo del video
-            if low and len(chosen) < req.review_frames:
-                step_l = max(1, len(low) // max(1, (req.review_frames - len(chosen)) * 3))
-                pick(low[::step_l])
-            chosen.sort()
-            if chosen:
-                tasks[task_id].update({"status": "saving_review"})
-                import shutil
-                rdir = os.path.join(SHARED, "frames", review_folder)
-                shutil.rmtree(rdir, ignore_errors=True)
-                os.makedirs(rdir, exist_ok=True)
-                cap2 = cv2.VideoCapture(req.video_path)
-                for n, k in enumerate(chosen, 1):
-                    oi = k * frame_interval
-                    cap2.set(cv2.CAP_PROP_POS_FRAMES, oi)
-                    ok, fr = cap2.read()
-                    if not ok: continue
-                    t = int(oi / video_fps) if video_fps else 0
-                    cv2.imwrite(os.path.join(rdir, f"{n:04d}_{t//3600:02d}h{(t%3600)//60:02d}m{t%60:02d}s.png"), fr)
-                    review_saved += 1
-                cap2.release()
-                try:
-                    os.chmod(rdir, 0o777)
-                except Exception:
-                    pass
+        try:
+            if req.review_frames > 0 and frame_sets:
+                missed = set()
+                for cn, pres in smoothed.items():
+                    for k, v in enumerate(pres):
+                        if v and cn not in frame_sets[k]:
+                            missed.add(k)
+                fps_cand = set(k for ks in discarded.values() for k in ks) - missed
+                low = [k for k, v in enumerate(lowconf) if v and k not in missed and k not in fps_cand]
+                min_gap = max(1, int(2 * eff_fps))   # al menos 2 s entre frames elegidos
+                chosen = []
+                def pick(cands):
+                    for k in cands:
+                        if len(chosen) >= req.review_frames: return
+                        if all(abs(k - x) >= min_gap for x in chosen):
+                            chosen.append(k)
+                pick(sorted(missed))
+                pick(sorted(fps_cand))
+                # repartir los dudosos a lo largo del video
+                if low and len(chosen) < req.review_frames:
+                    step_l = max(1, len(low) // max(1, (req.review_frames - len(chosen)) * 3))
+                    pick(low[::step_l])
+                chosen.sort()
+                if chosen:
+                    tasks[task_id].update({"status": "saving_review"})
+                    import shutil
+                    rdir = os.path.join(SHARED, "frames", review_folder)
+                    shutil.rmtree(rdir, ignore_errors=True)
+                    os.makedirs(rdir, exist_ok=True)
+                    cap2 = cv2.VideoCapture(req.video_path)
+                    for n, k in enumerate(chosen, 1):
+                        oi = k * frame_interval
+                        cap2.set(cv2.CAP_PROP_POS_FRAMES, oi)
+                        ok, fr = cap2.read()
+                        if not ok: continue
+                        t = int(oi / video_fps) if video_fps else 0
+                        cv2.imwrite(os.path.join(rdir, f"{n:04d}_{t//3600:02d}h{(t%3600)//60:02d}m{t%60:02d}s.png"), fr)
+                        review_saved += 1
+                    cap2.release()
+                    try:
+                        os.chmod(rdir, 0o777)
+                    except Exception:
+                        pass
+        except Exception as e:
+            # Un fallo aqui (ej. permisos) NUNCA debe hacer perder el Excel de la inferencia
+            print(f"Aviso: no se pudieron guardar los frames dificiles: {e}")
+            tasks[task_id].update({"review_error": str(e)})
+            review_saved = 0
 
         # Segmentos continuos de aparicion por marca (para verificar)
         segments = []
@@ -567,6 +573,7 @@ def run_inference(task_id, req):
             "status": "done", "type": "inference", "current": processed, "total": total_to_process,
             "video": video_name, "annotations": sum(class_det.values()),
             "review_frames": review_saved, "review_folder": review_folder if review_saved else None,
+            "review_error": tasks[task_id].get("review_error"),
             "excel": f"{video_name}_metrics.xlsx", "metrics": metrics_list,
         }
 

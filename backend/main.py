@@ -650,6 +650,16 @@ def get_stats(db: Session = Depends(get_db), user: User = Depends(get_current_us
 VIDEOS_DIR = os.getenv("VIDEOS_DIR", "/mnt/shared/videos")
 FRAMES_DIR = os.getenv("FRAMES_DIR", "/mnt/shared/frames")
 
+# El backend corre como root: al arrancar garantiza que el worker (otro usuario) pueda escribir
+for _d in ("videos", "videos_raw", "frames", "audio", "datasets", "datasets/sources", "datasets/ready",
+           "models", "results", "runs", "mlflow", "notebooks"):
+    try:
+        _p = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), _d)
+        os.makedirs(_p, exist_ok=True)
+        os.chmod(_p, 0o777)
+    except Exception as _e:
+        print(f"Aviso permisos {_d}: {_e}")
+
 # Track extraction jobs in memory
 extraction_jobs: dict[str, dict] = {}
 

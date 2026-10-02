@@ -527,7 +527,7 @@ function ProcessingPage() {
             if (p.type === 'train') alert(`Entrenamiento completado
 mAP50: ${p.mAP50}
 Modelo: ${p.model_saved}`);
-            else if (p.type === 'inference') alert(`Inferencia completada\n${p.annotations} anotaciones\nExcel: ${p.excel}` + (p.review_frames ? `\n\n${p.review_frames} frames difíciles guardados para reetiquetar.\nVaya a Resultados > Frames difíciles para enviarlos a CVAT.` : ''));
+            else if (p.type === 'inference') alert(`Inferencia completada\n${p.annotations} anotaciones\nExcel: ${p.excel}` + (p.review_frames ? `\n\n${p.review_frames} frames difíciles guardados para reetiquetar.\nVaya a Resultados > Frames difíciles para enviarlos a CVAT.` : '') + (p.review_error ? `\n\nAviso: no se pudieron guardar los frames difíciles (${p.review_error}). El Excel sí se generó.` : ''));
             else if (p.type === 'video') alert(`Video generado
 ${p.output} (${p.size_mb} MB)`);
           } else if (p.message) { alert(`Error: ${p.message}`); }
