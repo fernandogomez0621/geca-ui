@@ -95,6 +95,17 @@ class AppSetting(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class LabelGroup(Base):
+    """Proyecto: grupo reutilizable de etiquetas para crear tareas CVAT"""
+    __tablename__ = "label_groups"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(150), unique=True, nullable=False)
+    description = Column(Text, default="")
+    labels = Column(Text, default="[]")  # lista JSON de etiquetas
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # ==============================================
 #  PYDANTIC SCHEMAS
 # ==============================================
@@ -974,6 +985,13 @@ async def create_cvat_task_from_frames(folder: str, data: CreateCvatTaskRequest,
 
         # 2. Create task with labels
         auth_headers = {**headers, "Authorization": f"Token {token}"}
+        clean = []
+        for l in (data.labels or []):
+            for part in str(l).split(","):
+                s = part.strip()
+                if s and s not in clean:
+                    clean.append(s)
+        data.labels = clean
         labels_payload = [{"name": l, "attributes": []} for l in data.labels] if data.labels else []
 
         async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=60, headers=auth_headers) as client:
@@ -2226,8 +2244,13 @@ def get_video_analytics(user: User = Depends(get_current_user)):
         video_name = f.replace("_metrics.xlsx", "")
         try:
             wb = openpyxl.load_workbook(os.path.join(results_dir, f), read_only=True)
-            ws = wb.active
+            ws = wb.worksheets[0]
             rows = list(ws.iter_rows(min_row=2, values_only=True))
+            cfg = {}
+            if "Configuracion" in wb.sheetnames:
+                for r in wb["Configuracion"].iter_rows(values_only=True):
+                    if r and r[0]:
+                        cfg[str(r[0])] = r[1]
             wb.close()
             brands = []
             for row in rows:
@@ -2240,7 +2263,7 @@ def get_video_analytics(user: User = Depends(get_current_user)):
                     "avg_when_present": round(float(row[3] or 0), 2),
                     "avg_total": round(float(row[4] or 0), 2),
                     "time_seconds": float(row[5] or 0),
-                    "time_percent": round(float(row[6] or 0), 2),
+                    "time_percent": round(float(row[6] or 0), 4),
                 }
                 brands.append(brand)
                 total_detections += brand["detections"]
@@ -2251,8 +2274,21 @@ def get_video_analytics(user: User = Depends(get_current_user)):
                 brand_totals[brand["label"]]["time_seconds"] += brand["time_seconds"]
                 brand_totals[brand["label"]]["videos"] += 1
 
+            # Duracion y frames analizados del video (para ponderar al combinar videos)
+            dur = cfg.get("Duracion analizada (s)")
+            nfr = cfg.get("Frames analizados")
+            if not dur or not nfr:
+                # Excel antiguo: se deduce de cualquier marca con porcentaje > 0
+                for b in brands:
+                    if b["time_percent"] and b["time_percent"] > 0:
+                        dur = dur or b["time_seconds"] / (b["time_percent"] / 100)
+                        nfr = nfr or b["frames"] / (b["time_percent"] / 100)
+                        break
             videos.append({"video": video_name, "brands": brands, "total_brands": len(brands),
-                           "total_detections": sum(b["detections"] for b in brands)})
+                           "total_detections": sum(b["detections"] for b in brands),
+                           "duration_seconds": round(float(dur or 0), 1),
+                           "analyzed_frames": int(round(float(nfr or 0))),
+                           "legacy": not cfg})
         except Exception:
             continue
 
@@ -2668,3 +2704,121 @@ def run_preprocess(task_id, input_path, videos_dir, output_name, segments):
 
     except Exception as e:
         preprocess_progress[task_id] = {"status": "error", "message": str(e)}
+
+
+
+# ==============================================
+#  PROYECTOS (grupos de etiquetas)
+# ==============================================
+
+class LabelGroupIn(BaseModel):
+    name: str
+    description: str = ""
+    labels: list = []
+
+
+def _lg_out(g):
+    import json as _json
+    try:
+        labels = _json.loads(g.labels or "[]")
+    except Exception:
+        labels = []
+    return {"id": g.id, "name": g.name, "description": g.description or "",
+            "labels": labels, "updated_at": g.updated_at.isoformat() if g.updated_at else None}
+
+
+def _clean_labels(labels):
+    out = []
+    for l in labels:
+        for part in str(l).split(","):
+            s = part.strip()
+            if s and s not in out:
+                out.append(s)
+    return out
+
+
+@app.get("/api/label-groups")
+def list_label_groups(user: User = Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        return {"groups": [_lg_out(g) for g in db.query(LabelGroup).order_by(LabelGroup.name).all()]}
+    finally:
+        db.close()
+
+
+@app.post("/api/label-groups")
+def create_label_group(data: LabelGroupIn, user: User = Depends(get_current_user)):
+    import json as _json
+    db = SessionLocal()
+    try:
+        name = data.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+        if db.query(LabelGroup).filter(LabelGroup.name == name).first():
+            raise HTTPException(status_code=400, detail="Ya existe un proyecto con ese nombre")
+        g = LabelGroup(name=name, description=data.description, labels=_json.dumps(_clean_labels(data.labels)))
+        db.add(g); db.commit(); db.refresh(g)
+        return _lg_out(g)
+    finally:
+        db.close()
+
+
+@app.put("/api/label-groups/{gid}")
+def update_label_group(gid: int, data: LabelGroupIn, user: User = Depends(get_current_user)):
+    import json as _json
+    db = SessionLocal()
+    try:
+        g = db.query(LabelGroup).filter(LabelGroup.id == gid).first()
+        if not g:
+            raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+        name = data.name.strip()
+        dup = db.query(LabelGroup).filter(LabelGroup.name == name, LabelGroup.id != gid).first()
+        if dup:
+            raise HTTPException(status_code=400, detail="Ya existe un proyecto con ese nombre")
+        g.name, g.description, g.labels = name, data.description, _json.dumps(_clean_labels(data.labels))
+        db.commit(); db.refresh(g)
+        return _lg_out(g)
+    finally:
+        db.close()
+
+
+@app.delete("/api/label-groups/{gid}")
+def delete_label_group(gid: int, user: User = Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        g = db.query(LabelGroup).filter(LabelGroup.id == gid).first()
+        if g:
+            db.delete(g); db.commit()
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+
+# ==============================================
+#  APOYO A ENTRENAMIENTO CON POCOS DATOS
+# ==============================================
+
+@app.get("/api/datasets/ready/{name}/counts")
+def dataset_counts(name: str, user: User = Depends(get_current_user)):
+    """Cantidad de imagenes por particion, para recomendar el perfil de entrenamiento."""
+    base = os.path.join(os.getenv("SHARED_DIR", "/mnt/shared"), "datasets", "ready", name, "images")
+    out = {}
+    for s in ("train", "val", "test"):
+        d = os.path.join(base, s)
+        out[s] = len([f for f in os.listdir(d) if f.lower().endswith((".png", ".jpg", ".jpeg"))]) if os.path.isdir(d) else 0
+    return out
+
+
+@app.get("/api/review-frames")
+def list_review_frames(user: User = Depends(get_current_user)):
+    """Carpetas de frames dificiles generadas por la inferencia (aprendizaje activo)."""
+    out = []
+    if os.path.isdir(FRAMES_DIR):
+        for d in sorted(os.listdir(FRAMES_DIR)):
+            p = os.path.join(FRAMES_DIR, d)
+            if d.endswith("_revision") and os.path.isdir(p):
+                n = len([f for f in os.listdir(p) if f.lower().endswith((".png", ".jpg", ".jpeg"))])
+                if n:
+                    out.append({"folder": d, "video": d[:-len("_revision")], "count": n,
+                                "modified": datetime.fromtimestamp(os.path.getmtime(p)).isoformat()})
+    return {"folders": out}

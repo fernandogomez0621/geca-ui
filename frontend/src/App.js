@@ -51,7 +51,7 @@ function LoginPage() {
 // === LAYOUT ===
 function Layout({ children }) {
   const { user, logout } = useAuth(); const location = useLocation();
-  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/preprocess', label: 'Pre-procesar', icon: '✂' }, { path: '/datasets', label: 'Datasets', icon: '◫' }, { path: '/processing', label: 'Procesamiento', icon: '⚙' }, { path: '/results', label: 'Resultados', icon: '◉' }, { path: '/analytics-audio', label: 'Análisis Audio', icon: '♪' }, { path: '/analytics-video', label: 'Análisis Video', icon: '◈' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
+  const navItems = [{ path: '/', label: 'Dashboard', icon: '◆' }, { path: '/brands', label: 'Marcas', icon: '◎' }, { path: '/contexts', label: 'Contextos', icon: '▦' }, { path: '/projects', label: 'Proyectos', icon: '❖' }, { path: '/videos', label: 'Videos', icon: '▶' }, { path: '/preprocess', label: 'Pre-procesar', icon: '✂' }, { path: '/datasets', label: 'Datasets', icon: '◫' }, { path: '/processing', label: 'Procesamiento', icon: '⚙' }, { path: '/results', label: 'Resultados', icon: '◉' }, { path: '/analytics-audio', label: 'Análisis Audio', icon: '♪' }, { path: '/analytics-video', label: 'Análisis Video', icon: '◈' }, { path: '/cvat', label: 'CVAT', icon: '⬡' }];
   if (user?.role === 'admin') navItems.push({ path: '/users', label: 'Usuarios', icon: '◇' });
   return (
     <div className="app-layout">
@@ -280,19 +280,26 @@ function VideoAnalyticsPage() {
     setExcludedVideos(next);
   };
   // Aggregate brands from selected videos
+  // Agregacion PONDERADA: cada video pesa segun su duracion analizada
+  const totalDur = videos.reduce((s, v) => s + (v.duration_seconds || 0), 0);
+  const totalAnalyzed = videos.reduce((s, v) => s + (v.analyzed_frames || 0), 0);
+  const hasLegacy = videos.some(v => v.legacy);
   const brandMap = {};
   videos.forEach(v => v.brands?.forEach(b => {
-    if (!brandMap[b.label]) brandMap[b.label] = {label:b.label, detections:0, frames:0, time_seconds:0, avg_when_present:0, avg_total:0, time_percent:0, count:0, total_frames_sum:0};
-    brandMap[b.label].detections += (b.detections||0);
-    brandMap[b.label].frames += (b.frames||0);
-    brandMap[b.label].time_seconds += (b.time_seconds||0);
-    brandMap[b.label].time_percent += (b.time_percent||0);
-    brandMap[b.label].avg_when_present += (b.avg_when_present||0);
-    brandMap[b.label].avg_total += (b.avg_total||0);
-    brandMap[b.label].count++;
+    if (!brandMap[b.label]) brandMap[b.label] = {label:b.label, detections:0, frames:0, raw_frames:0, time_seconds:0, avg_when_present:0, avg_total:0, time_percent:0, count:0};
+    const m = brandMap[b.label];
+    m.detections += (b.detections||0);
+    m.frames += (b.frames||0);
+    m.time_seconds += (b.time_seconds||0);
+    m.raw_frames += (b.avg_when_present > 0 ? (b.detections||0) / b.avg_when_present : 0);
+    m.pct_fallback = (m.pct_fallback || 0) + (b.time_percent||0);
+    m.count++;
   }));
   Object.values(brandMap).forEach(b => {
-    if (b.count > 1) { b.avg_when_present = Math.round(b.avg_when_present / b.count * 100) / 100; b.avg_total = Math.round(b.avg_total / b.count * 100) / 100; b.time_percent = Math.round(b.time_percent / b.count * 100) / 100; }
+    b.time_seconds = Math.round(b.time_seconds * 10) / 10;
+    b.time_percent = totalDur > 0 ? Math.round(b.time_seconds / totalDur * 10000) / 100 : Math.round(b.pct_fallback / Math.max(1, videos.length) * 100) / 100;
+    b.avg_when_present = b.raw_frames > 0 ? Math.round(b.detections / b.raw_frames * 100) / 100 : 0;
+    b.avg_total = totalAnalyzed > 0 ? Math.round(b.detections / totalAnalyzed * 100) / 100 : 0;
   });
   const brands = Object.values(brandMap).sort((a,b) => b.detections - a.detections);
   const kpis = {
@@ -308,7 +315,7 @@ function VideoAnalyticsPage() {
   return (
     <div className="page">
       <div className="page-header">
-        <div><h1>Análisis Video</h1><p>Detección visual de marcas en videos procesados</p></div>
+        <div><h1>Análisis Video</h1><p>Detección visual de marcas en videos procesados{totalDur > 0 ? ` · ${(totalDur/60).toFixed(1)} min analizados` : ''}</p>{hasLegacy && <p style={{fontSize:11,color:'#e17055',marginTop:4}}>⚠ Hay videos procesados con la versión anterior: sus segundos pueden estar sobreestimados. Vuelva a ejecutar la inferencia para corregirlos.</p>}</div>
         <div style={{display:'flex',gap:8}}>
           <a href="/api/video-analytics/export" download="analisis_video.xlsx" className="btn-secondary" style={{fontSize:12,textDecoration:'none'}}>⬇ Excel</a>
           <button className="btn-secondary" style={{fontSize:12}} onClick={async () => {
@@ -481,6 +488,15 @@ function ProcessingPage() {
   const [trainMixup, setTrainMixup] = useState(0.0);
   const [trainCopyPaste, setTrainCopyPaste] = useState(0.0);
   const [trainExpName, setTrainExpName] = useState('');
+  const [trainImgsz, setTrainImgsz] = useState(1280);
+  const [trainProfile, setTrainProfile] = useState('pocos');
+  const [trainCounts, setTrainCounts] = useState(null);
+  const [infReview, setInfReview] = useState(60);
+  const [infMin, setInfMin] = useState(0.3);
+  const [infImgsz, setInfImgsz] = useState(0);
+  const [infSmooth, setInfSmooth] = useState(1.0);
+  const [vidImgsz, setVidImgsz] = useState(0);
+  const [vidHold, setVidHold] = useState(0.5);
   const [infModel, setInfModel] = useState('');
   const [infVideo, setInfVideo] = useState('');
   const [infFps, setInfFps] = useState(10);
@@ -511,9 +527,7 @@ function ProcessingPage() {
             if (p.type === 'train') alert(`Entrenamiento completado
 mAP50: ${p.mAP50}
 Modelo: ${p.model_saved}`);
-            else if (p.type === 'inference') alert(`Inferencia completada
-${p.annotations} anotaciones
-Excel: ${p.excel}`);
+            else if (p.type === 'inference') alert(`Inferencia completada\n${p.annotations} anotaciones\nExcel: ${p.excel}` + (p.review_frames ? `\n\n${p.review_frames} frames difíciles guardados para reetiquetar.\nVaya a Resultados > Frames difíciles para enviarlos a CVAT.` : ''));
             else if (p.type === 'video') alert(`Video generado
 ${p.output} (${p.size_mb} MB)`);
           } else if (p.message) { alert(`Error: ${p.message}`); }
@@ -522,13 +536,38 @@ ${p.output} (${p.size_mb} MB)`);
     }, 3000);
   };
 
+  const PRESETS = {
+    pocos:    { label: 'Pocos datos (< 300 imágenes)', epochs: 300, patience: 100, freeze: 10, lr: 0.001, mixup: 0.1, batch: 0 },
+    medio:    { label: 'Datos medios (300 – 1.500)',   epochs: 150, patience: 50,  freeze: 0,  lr: 0.01,  mixup: 0.05, batch: 0 },
+    estandar: { label: 'Muchos datos (> 1.500)',       epochs: 100, patience: 30,  freeze: 0,  lr: 0.01,  mixup: 0.0, batch: 0 },
+    finetune: { label: 'Fine-tuning de modelo GECA',   epochs: 60,  patience: 30,  freeze: 10, lr: 0.0005, mixup: 0.05, batch: 0 },
+  };
+  const applyPreset = (key) => {
+    const p = PRESETS[key]; if (!p) return;
+    setTrainProfile(key);
+    setTrainEpochs(p.epochs); setTrainPatience(p.patience); setTrainFreeze(p.freeze);
+    setTrainLr(p.lr); setTrainMixup(p.mixup); setTrainBatch(p.batch); setTrainCopyPaste(0);
+  };
+  const recommendPreset = (n, model) => {
+    if (model && model.startsWith('geca_')) return 'finetune';
+    if (n < 300) return 'pocos';
+    if (n <= 1500) return 'medio';
+    return 'estandar';
+  };
+  const onDatasetChange = async (name) => {
+    setTrainDataset(name); setTrainCounts(null);
+    if (!name) return;
+    const r = await api('/api/datasets/ready/' + encodeURIComponent(name) + '/counts');
+    if (r && typeof r.train === 'number') { setTrainCounts(r); applyPreset(recommendPreset(r.train, trainModel)); }
+  };
+
   const startTrain = async () => {
     if (!trainDataset || running) return;
     setRunning(true); setProgress(null);
     const r = await api('/api/worker/train', { method: 'POST', body: JSON.stringify({
       dataset_name: trainDataset, model_base: trainModel, experiment_name: trainExpName || trainDataset + '_v1',
       epochs: trainEpochs, batch: trainBatch, patience: trainPatience, freeze: trainFreeze,
-      lr0: trainLr, mixup: trainMixup, copy_paste: trainCopyPaste })});
+      lr0: trainLr, mixup: trainMixup, copy_paste: trainCopyPaste, imgsz: trainImgsz, profile: trainProfile === 'finetune' ? 'pocos' : trainProfile })});
     if (r && r.task_id) { setTaskId(r.task_id); pollProgress(r.task_id); }
     else { setRunning(false); alert('Error: ' + (r && r.message || 'Fallo')); }
   };
@@ -537,7 +576,7 @@ ${p.output} (${p.size_mb} MB)`);
     if (!infModel || !infVideo || running) return;
     setRunning(true); setProgress(null);
     const r = await api('/api/worker/inference', { method: 'POST', body: JSON.stringify({
-      model_name: infModel, video_path: '/mnt/shared/videos/' + infVideo, fps_process: infFps, conf: infConf })});
+      model_name: infModel, video_path: '/mnt/shared/videos/' + infVideo, fps_process: infFps, conf: infConf, imgsz: infImgsz, smooth_seconds: infSmooth, review_frames: infReview, min_seconds: infMin })});
     if (r && r.task_id) { setTaskId(r.task_id); pollProgress(r.task_id); }
     else { setRunning(false); alert('Error: ' + (r && r.message || 'Fallo')); }
   };
@@ -546,7 +585,7 @@ ${p.output} (${p.size_mb} MB)`);
     if (!vidModel || !vidVideo || running) return;
     setRunning(true); setProgress(null);
     const r = await api('/api/worker/video-annotate', { method: 'POST', body: JSON.stringify({
-      model_name: vidModel, video_path: '/mnt/shared/videos/' + vidVideo, resolution: vidRes, conf: vidConf, crf: vidCrf })});
+      model_name: vidModel, video_path: '/mnt/shared/videos/' + vidVideo, resolution: vidRes, conf: vidConf, crf: vidCrf, imgsz: vidImgsz, hold_seconds: vidHold })});
     if (r && r.task_id) { setTaskId(r.task_id); pollProgress(r.task_id); }
     else { setRunning(false); alert('Error: ' + (r && r.message || 'Fallo')); }
   };
@@ -590,16 +629,25 @@ ${p.output} (${p.size_mb} MB)`);
         <div className="card">
           <h3 style={{marginBottom:16}}>Entrenar Modelo YOLO26</h3>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-            <div className="form-group"><label>Dataset</label><select value={trainDataset} onChange={e=>setTrainDataset(e.target.value)} style={ss}><option value="">Seleccionar...</option>{datasets.map(d=><option key={d} value={d}>{d}</option>)}</select></div>
-            <div className="form-group"><label>Modelo Base</label><select value={trainModel} onChange={e=>setTrainModel(e.target.value)} style={ss}>{baseModels.map(m=><option key={m.name} value={m.name}>{m.name} ({m.size_mb} MB)</option>)}{trainedModels.length>0&&<optgroup label="Fine-tuning">{trainedModels.map(m=><option key={m.name} value={m.name}>{m.name}</option>)}</optgroup>}</select></div>
+            <div className="form-group"><label>Dataset</label><select value={trainDataset} onChange={e=>onDatasetChange(e.target.value)} style={ss}><option value="">Seleccionar...</option>{datasets.map(d=><option key={d} value={d}>{d}</option>)}</select></div>
+            <div className="form-group"><label>Modelo Base</label><select value={trainModel} onChange={e=>{setTrainModel(e.target.value); if (e.target.value.startsWith('geca_')) applyPreset('finetune'); else if (trainCounts) applyPreset(recommendPreset(trainCounts.train, e.target.value));}} style={ss}>{baseModels.map(m=><option key={m.name} value={m.name}>{m.name} ({m.size_mb} MB)</option>)}{trainedModels.length>0&&<optgroup label="Fine-tuning">{trainedModels.map(m=><option key={m.name} value={m.name}>{m.name}</option>)}</optgroup>}</select></div>
+            <div className="form-group" style={{gridColumn:'1/-1'}}>
+              <label>Perfil de entrenamiento</label>
+              <select value={trainProfile} onChange={e=>applyPreset(e.target.value)} style={ss}>
+                {Object.entries(PRESETS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+              </select>
+              {trainCounts && <div style={{fontSize:11,color:'#00b894',marginTop:4}}>Dataset: {trainCounts.train} imágenes de entrenamiento · {trainCounts.val} validación · {trainCounts.test} prueba — perfil recomendado aplicado automáticamente. Puede ajustar los valores abajo.</div>}
+              {trainCounts && trainCounts.val < 10 && <div style={{fontSize:11,color:'#e17055',marginTop:4}}>Muy pocas imágenes de validación: las métricas (mAP) serán poco confiables.</div>}
+            </div>
             <div className="form-group"><label>Nombre Experimento</label><input value={trainExpName} onChange={e=>setTrainExpName(e.target.value)} placeholder={(trainDataset||'dataset')+'_v1'} style={ss}/></div>
             <div className="form-group"><label>Epochs: {trainEpochs}</label><input type="range" min={50} max={500} step={50} value={trainEpochs} onChange={e=>setTrainEpochs(parseInt(e.target.value))}/></div>
-            <div className="form-group"><label>Batch: {trainBatch}</label><input type="range" min={2} max={64} step={2} value={trainBatch} onChange={e=>setTrainBatch(parseInt(e.target.value))}/></div>
+            <div className="form-group"><label>Batch: {trainBatch === 0 ? 'Automático (recomendado)' : trainBatch}</label><input type="range" min={0} max={64} step={2} value={trainBatch} onChange={e=>setTrainBatch(parseInt(e.target.value))}/></div>
             <div className="form-group"><label>Patience: {trainPatience}</label><input type="range" min={10} max={100} step={10} value={trainPatience} onChange={e=>setTrainPatience(parseInt(e.target.value))}/></div>
             <div className="form-group"><label>Freeze: {trainFreeze}</label><input type="range" min={0} max={20} step={1} value={trainFreeze} onChange={e=>setTrainFreeze(parseInt(e.target.value))}/></div>
             <div className="form-group"><label>Learning Rate</label><select value={trainLr} onChange={e=>setTrainLr(parseFloat(e.target.value))} style={ss}><option value={0.01}>0.01 (default)</option><option value={0.005}>0.005</option><option value={0.001}>0.001 (fine-tuning)</option><option value={0.0005}>0.0005</option></select></div>
             <div className="form-group"><label>Mixup: {trainMixup}</label><input type="range" min={0} max={0.5} step={0.1} value={trainMixup} onChange={e=>setTrainMixup(parseFloat(e.target.value))}/></div>
             <div className="form-group"><label>Copy-Paste: {trainCopyPaste}</label><input type="range" min={0} max={0.5} step={0.1} value={trainCopyPaste} onChange={e=>setTrainCopyPaste(parseFloat(e.target.value))}/></div>
+            <div className="form-group"><label>Resolución de entrenamiento</label><select value={trainImgsz} onChange={e=>setTrainImgsz(parseInt(e.target.value))} style={ss}><option value={640}>640 px (rápido, logos grandes)</option><option value={960}>960 px</option><option value={1280}>1280 px (recomendado, logos pequeños)</option><option value={1920}>1920 px (resolución completa 1080p, más lento)</option></select><div style={{fontSize:11,color:'#666',marginTop:4}}>Mayor resolución detecta mejor soportes pequeños o lejanos. Si da error de memoria, baje el Batch.</div></div>
           </div>
           <button className="btn-primary" onClick={startTrain} disabled={!trainDataset||running} style={{marginTop:16}}>{running?'Entrenando...':'Iniciar Entrenamiento'}</button>
         </div>
@@ -612,7 +660,11 @@ ${p.output} (${p.size_mb} MB)`);
             <div className="form-group"><label>Modelo</label><select value={infModel} onChange={e=>setInfModel(e.target.value)} style={ss}><option value="">Seleccionar...</option>{trainedModels.map(m=><option key={m.name} value={m.name}>{m.name}</option>)}</select></div>
             <div className="form-group"><label>Video</label><select value={infVideo} onChange={e=>setInfVideo(e.target.value)} style={ss}><option value="">Seleccionar...</option>{videos.map(v=><option key={v.name} value={v.name}>{v.name} ({v.size_mb} MB)</option>)}</select></div>
             <div className="form-group"><label>FPS: {infFps}</label><input type="range" min={5} max={30} step={5} value={infFps} onChange={e=>setInfFps(parseInt(e.target.value))}/></div>
-            <div className="form-group"><label>Confianza: {infConf}</label><input type="range" min={0.1} max={0.9} step={0.05} value={infConf} onChange={e=>setInfConf(parseFloat(e.target.value))}/></div>
+            <div className="form-group"><label>Confianza: {infConf}</label><input type="range" min={0.1} max={0.9} step={0.05} value={infConf} onChange={e=>setInfConf(parseFloat(e.target.value))}/>{infConf>0.5&&<div style={{fontSize:11,color:'#e17055',marginTop:4}}>Confianza alta: el modelo puede perder marcas reales y los tiempos quedarán por debajo.</div>}</div>
+            <div className="form-group"><label>Resolución de análisis</label><select value={infImgsz} onChange={e=>setInfImgsz(parseInt(e.target.value))} style={ss}><option value={0}>Automática (la del entrenamiento)</option><option value={640}>640 px</option><option value={960}>960 px</option><option value={1280}>1280 px</option><option value={1920}>1920 px (resolución completa)</option></select></div>
+            <div className="form-group"><label>Suavizado temporal: {infSmooth} s</label><input type="range" min={0} max={3} step={0.5} value={infSmooth} onChange={e=>setInfSmooth(parseFloat(e.target.value))}/><div style={{fontSize:11,color:'#666',marginTop:4}}>Si una marca desaparece menos de este tiempo y vuelve a aparecer, se cuenta como presencia continua. 0 = sin suavizado.</div></div>
+            <div className="form-group"><label>Duración mínima de aparición: {infMin} s</label><input type="range" min={0} max={2} step={0.1} value={infMin} onChange={e=>setInfMin(parseFloat(e.target.value))}/><div style={{fontSize:11,color:'#666',marginTop:4}}>Apariciones más cortas se descartan como falsas detecciones. 0 = sin filtro.</div></div>
+            <div className="form-group"><label>Frames difíciles a guardar: {infReview}</label><input type="range" min={0} max={200} step={20} value={infReview} onChange={e=>setInfReview(parseInt(e.target.value))}/><div style={{fontSize:11,color:'#666',marginTop:4}}>Guarda los momentos donde el modelo perdió una marca o dudó, para etiquetarlos y reentrenar. Es la forma más eficiente de mejorar con pocos datos.</div></div>
           </div>
           <button className="btn-primary" onClick={startInference} disabled={!infModel||!infVideo||running} style={{marginTop:16}}>{running?'Procesando...':'Iniciar Inferencia'}</button>
         </div>
@@ -626,10 +678,149 @@ ${p.output} (${p.size_mb} MB)`);
             <div className="form-group"><label>Video</label><select value={vidVideo} onChange={e=>setVidVideo(e.target.value)} style={ss}><option value="">Seleccionar...</option>{videos.map(v=><option key={v.name} value={v.name}>{v.name} ({v.size_mb} MB)</option>)}</select></div>
             <div className="form-group"><label>Resolución</label><select value={vidRes} onChange={e=>setVidRes(parseInt(e.target.value))} style={ss}><option value={480}>480p (streaming)</option><option value={720}>720p (HD)</option><option value={1080}>1080p</option></select></div>
             <div className="form-group"><label>Confianza: {vidConf}</label><input type="range" min={0.1} max={0.9} step={0.05} value={vidConf} onChange={e=>setVidConf(parseFloat(e.target.value))}/></div>
+            <div className="form-group"><label>Resolución de análisis</label><select value={vidImgsz} onChange={e=>setVidImgsz(parseInt(e.target.value))} style={ss}><option value={0}>Automática (la del entrenamiento)</option><option value={640}>640 px</option><option value={960}>960 px</option><option value={1280}>1280 px</option><option value={1920}>1920 px (resolución completa)</option></select></div>
+            <div className="form-group"><label>Estabilización: {vidHold} s</label><input type="range" min={0} max={2} step={0.25} value={vidHold} onChange={e=>setVidHold(parseFloat(e.target.value))}/><div style={{fontSize:11,color:'#666',marginTop:4}}>Mantiene la caja visible si el modelo pierde la marca brevemente. 0 = sin estabilización.</div></div>
           </div>
           <button className="btn-primary" onClick={startVideo} disabled={!vidModel||!vidVideo||running} style={{marginTop:16}}>{running?'Generando...':'Generar Video'}</button>
         </div>
       )}
+    </div>
+  );
+}
+
+// === LABEL PICKER (reutilizable) ===
+function LabelPicker({ available, selected, onChange }) {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState({});
+  const [custom, setCustom] = useState('');
+  const toggle = (l) => onChange(selected.includes(l) ? selected.filter(x => x !== l) : [...selected, l]);
+  const addCustom = () => {
+    const nl = custom.split(',').map(s => s.trim()).filter(Boolean);
+    if (nl.length) onChange([...new Set([...selected, ...nl])]);
+    setCustom('');
+  };
+  const q = search.trim().toLowerCase();
+  const grouped = {};
+  available.forEach(l => {
+    if (q && !l.cvat_label.toLowerCase().includes(q) && !(l.brand || '').toLowerCase().includes(q) && !(l.context || '').toLowerCase().includes(q)) return;
+    const b = l.brand || 'Sin marca';
+    (grouped[b] = grouped[b] || []).push(l);
+  });
+  const knownSet = new Set(available.map(l => l.cvat_label));
+  const extra = selected.filter(l => !knownSet.has(l));
+  const chip = (on) => ({display:'inline-flex',alignItems:'center',gap:4,fontSize:11,cursor:'pointer',padding:'3px 8px',borderRadius:4,background:on?'#6c5ce7':'#1a1a2e',color:on?'#fff':'#9898b0',border:'1px solid '+(on?'#6c5ce7':'#2a2a3a'),userSelect:'none'});
+  const inp = {padding:'5px 8px',borderRadius:4,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:12};
+  return (
+    <div>
+      <input placeholder="🔍 Buscar etiqueta, marca o contexto..." value={search} onChange={e => setSearch(e.target.value)} style={{...inp, width:'100%', marginBottom:8}} />
+      <div style={{maxHeight:320, overflowY:'auto', paddingRight:4}}>
+        {Object.entries(grouped).map(([brand, labels]) => {
+          const names = labels.map(l => l.cvat_label);
+          const nSel = names.filter(n => selected.includes(n)).length;
+          const all = nSel === names.length, some = nSel > 0 && !all;
+          const isOpen = q ? true : (open[brand] ?? nSel > 0);
+          return (
+            <div key={brand} style={{marginBottom:6,background:'#12121a',borderRadius:6,border:'1px solid #2a2a3a'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px'}}>
+                <span onClick={() => setOpen({...open, [brand]: !isOpen})} style={{cursor:'pointer',color:'#9898b0',width:12}}>{isOpen ? '▾' : '▸'}</span>
+                <input type="checkbox" checked={all} ref={el => { if (el) el.indeterminate = some; }} style={{accentColor:'#6c5ce7'}}
+                  onChange={() => onChange(all ? selected.filter(x => !names.includes(x)) : [...new Set([...selected, ...names])])} />
+                <strong onClick={() => setOpen({...open, [brand]: !isOpen})} style={{fontSize:13,color:'#eaeaf2',cursor:'pointer'}}>{brand}</strong>
+                <span style={{fontSize:11,color:'#666'}}>{nSel}/{names.length}</span>
+              </div>
+              {isOpen && <div style={{display:'flex',flexWrap:'wrap',gap:4,padding:'0 10px 8px 42px'}}>
+                {labels.map(l => <span key={l.cvat_label} style={chip(selected.includes(l.cvat_label))} onClick={() => toggle(l.cvat_label)} title={l.context}>{l.cvat_label}</span>)}
+              </div>}
+            </div>
+          );
+        })}
+        {Object.keys(grouped).length === 0 && <div style={{fontSize:12,color:'#666',padding:8}}>Sin resultados.</div>}
+      </div>
+      {extra.length > 0 && <div style={{marginTop:6}}>
+        <div style={{fontSize:11,color:'#9898b0',marginBottom:4}}>Etiquetas personalizadas (no registradas como submarca):</div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:4}}>{extra.map(l => <span key={l} style={chip(true)} onClick={() => toggle(l)}>{l} ✕</span>)}</div>
+      </div>}
+      <div style={{display:'flex',gap:6,marginTop:8}}>
+        <input placeholder="Etiquetas nuevas (separadas por coma)..." value={custom} onChange={e => setCustom(e.target.value)} style={{...inp, flex:1}}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } }} />
+        <button className="btn-sm btn-secondary" type="button" onClick={addCustom}>+ Agregar</button>
+      </div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:6,fontSize:11,color:'#9898b0'}}>
+        <span>Seleccionadas: <strong style={{color:'#eaeaf2'}}>{selected.length}</strong></span>
+        {selected.length > 0 && <span style={{cursor:'pointer',color:'#e17055'}} onClick={() => onChange([])}>Limpiar selección</span>}
+      </div>
+    </div>
+  );
+}
+
+// === PROJECTS PAGE (grupos de etiquetas) ===
+function ProjectsPage() {
+  const [groups, setGroups] = useState([]);
+  const [available, setAvailable] = useState([]);
+  const [editing, setEditing] = useState(null); // null | {id?, name, description, labels}
+  const [saving, setSaving] = useState(false);
+  const load = () => {
+    api('/api/label-groups').then(r => r && setGroups(r.groups || []));
+    api('/api/cvat-labels').then(r => r && setAvailable(r.labels || []));
+  };
+  useEffect(load, []);
+  const save = async () => {
+    if (!editing.name.trim()) { alert('Escriba un nombre para el proyecto'); return; }
+    if (editing.labels.length === 0) { alert('Seleccione al menos una etiqueta'); return; }
+    setSaving(true);
+    const body = JSON.stringify({ name: editing.name, description: editing.description, labels: editing.labels });
+    const r = editing.id
+      ? await api('/api/label-groups/' + editing.id, { method: 'PUT', body })
+      : await api('/api/label-groups', { method: 'POST', body });
+    setSaving(false);
+    if (r && r.id) { setEditing(null); load(); } else alert((r && r.detail) || 'Error guardando el proyecto');
+  };
+  const remove = async (g) => {
+    if (!window.confirm('¿Eliminar el proyecto "' + g.name + '"? Las tareas CVAT ya creadas no se ven afectadas.')) return;
+    await api('/api/label-groups/' + g.id, { method: 'DELETE' }); load();
+  };
+  const ss = {padding:'6px 10px',borderRadius:6,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:13,width:'100%'};
+  return (
+    <div className="page">
+      <div className="page-header">
+        <div><h1>Proyectos</h1><p>Grupos de etiquetas reutilizables para crear tareas en CVAT</p></div>
+        {!editing && <button className="btn-primary" onClick={() => setEditing({ name: '', description: '', labels: [] })}>+ Nuevo Proyecto</button>}
+      </div>
+
+      {editing && (
+        <div className="card" style={{marginBottom:16}}>
+          <h3 style={{marginBottom:12}}>{editing.id ? 'Editar proyecto' : 'Nuevo proyecto'}</h3>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 2fr',gap:12,marginBottom:12}}>
+            <div className="form-group"><label>Nombre</label><input value={editing.name} onChange={e => setEditing({...editing, name: e.target.value})} placeholder="Ej: LaLiga - CaixaBank" style={ss} /></div>
+            <div className="form-group"><label>Descripción (opcional)</label><input value={editing.description} onChange={e => setEditing({...editing, description: e.target.value})} placeholder="Ej: Partidos de fútbol con patrocinio CaixaBank" style={ss} /></div>
+          </div>
+          <label style={{fontSize:11,color:'#9898b0',textTransform:'uppercase',letterSpacing:1}}>Etiquetas del proyecto</label>
+          <div style={{marginTop:6}}><LabelPicker available={available} selected={editing.labels} onChange={labels => setEditing({...editing, labels})} /></div>
+          <div style={{display:'flex',gap:8,marginTop:14}}>
+            <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Guardando...' : 'Guardar proyecto'}</button>
+            <button className="btn-secondary" onClick={() => setEditing(null)}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {groups.length === 0 && !editing && <div className="card"><p className="empty-text">No hay proyectos. Cree uno para reutilizar el mismo grupo de etiquetas en varios videos.</p></div>}
+      {groups.map(g => (
+        <div key={g.id} className="card" style={{marginBottom:10}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:15,fontWeight:700,color:'#eaeaf2'}}>{g.name} <span style={{fontSize:11,color:'#9898b0',fontWeight:400}}>· {g.labels.length} etiquetas</span></div>
+              {g.description && <div style={{fontSize:12,color:'#9898b0',marginTop:2}}>{g.description}</div>}
+              <div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:8}}>
+                {g.labels.map(l => <span key={l} style={{fontSize:11,padding:'2px 7px',borderRadius:4,background:'#1a1a2e',color:'#9898b0',border:'1px solid #2a2a3a'}}>{l}</span>)}
+              </div>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn-sm btn-secondary" onClick={() => setEditing({ id: g.id, name: g.name, description: g.description, labels: [...g.labels] })}>Editar</button>
+              <button className="btn-sm btn-danger" onClick={() => remove(g)}>Eliminar</button>
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -785,9 +976,11 @@ function ResultsPage() {
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState(null);
   const [viewingImage, setViewingImage] = useState(null);
+  const [reviewFolders, setReviewFolders] = useState([]);
 
   const load = () => {
     setLoading(true);
+    api('/api/review-frames').then(r => r && setReviewFolders(r.folders || []));
     api('/api/results').then(r => {
       if (r) setResults(r.results || []);
       setLoading(false);
@@ -824,6 +1017,19 @@ function ResultsPage() {
         <div><h1>Resultados</h1><p>Videos procesados y métricas por video</p></div>
         <button className="btn-secondary" onClick={load}>↻ Actualizar</button>
       </div>
+
+      {reviewFolders.length > 0 && (
+        <div className="card" style={{marginBottom:16,borderColor:'#e17055'}}>
+          <h3 style={{marginBottom:4}}>🎯 Frames difíciles para reentrenar</h3>
+          <p style={{fontSize:12,color:'#9898b0',marginBottom:10}}>Momentos donde el modelo perdió una marca o dudó. Etiquetarlos y reentrenar es la forma más rápida de mejorar el modelo con pocos datos.</p>
+          {reviewFolders.map(f => (
+            <div key={f.folder} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderTop:'1px solid #2a2a3a'}}>
+              <span style={{fontSize:13}}><strong>{f.video}</strong> <span style={{color:'#9898b0'}}>· {f.count} frames</span></span>
+              <button className="btn-sm btn-primary" onClick={() => { sessionStorage.setItem('geca_open_frames', f.folder); window.location.href = '/videos'; }}>Revisar y enviar a CVAT →</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* IMAGE MODAL */}
       {viewingImage && (
@@ -1385,7 +1591,7 @@ function VideosPage() {
   const [cvatTaskName, setCvatTaskName] = useState('');
   const [cvatLabels, setCvatLabels] = useState([]);
   const [availableLabels, setAvailableLabels] = useState([]);
-  const [customLabel, setCustomLabel] = useState('');
+  const [labelGroups, setLabelGroups] = useState([]);
   // Audio state
   const [audioProcessing, setAudioProcessing] = useState(null);
   const [audioStatus, setAudioStatus] = useState(null);
@@ -1415,6 +1621,10 @@ function VideosPage() {
     });
   };
   useEffect(load, []);
+  useEffect(() => {
+    const f = sessionStorage.getItem('geca_open_frames');
+    if (f) { sessionStorage.removeItem('geca_open_frames'); loadFrames(f); }
+  }, []);
 
   const estimateFrames = (v) => {
     if (!v.duration_secs || v.duration_secs <= 0) return '?';
@@ -1735,7 +1945,7 @@ function VideosPage() {
         <div className="page-header">
           <div><h1>Frames: {viewingFrames}</h1><p>{framesTotal} imágenes extraídas</p></div>
           <div style={{display:'flex', gap: 8}}>
-            <button className="btn-primary btn-sm" onClick={() => { setShowCvatForm(true); setCvatTaskName(viewingFrames); api('/api/cvat-labels').then(r => r && setAvailableLabels(r.labels || [])); }}>📤 Crear tarea CVAT</button>
+            <button className="btn-primary btn-sm" onClick={() => { setShowCvatForm(true); setCvatTaskName(viewingFrames); api('/api/cvat-labels').then(r => r && setAvailableLabels(r.labels || [])); api('/api/label-groups').then(r => r && setLabelGroups(r.groups || [])); }}>📤 Crear tarea CVAT</button>
             <button className="btn-secondary btn-sm" onClick={() => { setViewingFrames(null); setFrames([]); setSelectedFrames(new Set()); }}>← Volver</button>
           </div>
         </div>
@@ -1748,47 +1958,20 @@ function VideosPage() {
               <div className="form-group"><label>Nombre de la tarea</label><input value={cvatTaskName} onChange={e => setCvatTaskName(e.target.value)} /></div>
               <div className="form-group" style={{gridColumn:'1/-1'}}>
               <label>Etiquetas para anotar</label>
-              {(() => {
-                const grouped = {};
-                availableLabels.forEach(l => {
-                  if (!grouped[l.brand]) grouped[l.brand] = [];
-                  grouped[l.brand].push(l);
-                });
-                return Object.entries(grouped).map(([brand, labels]) => {
-                  const allSelected = labels.every(l => cvatLabels.includes(l.cvat_label));
-                  const someSelected = labels.some(l => cvatLabels.includes(l.cvat_label));
-                  return (
-                    <div key={brand} style={{marginBottom:8,padding:'8px 10px',background:'#12121a',borderRadius:6,border:'1px solid #2a2a3a'}}>
-                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,cursor:'pointer'}} onClick={() => {
-                        if (allSelected) {
-                          setCvatLabels(prev => prev.filter(x => !labels.map(l=>l.cvat_label).includes(x)));
-                        } else {
-                          setCvatLabels(prev => [...new Set([...prev, ...labels.map(l=>l.cvat_label)])]);
-                        }
-                      }}>
-                        <input type="checkbox" checked={allSelected} onChange={()=>{}} ref={el => { if (el) el.indeterminate = someSelected && !allSelected; }} style={{accentColor:'#6c5ce7'}} />
-                        <strong style={{fontSize:13,color:'#eaeaf2'}}>{brand}</strong>
-                        <span style={{fontSize:11,color:'#666'}}>({labels.length} etiquetas)</span>
-                      </div>
-                      <div style={{display:'flex',flexWrap:'wrap',gap:4,paddingLeft:24}}>
-                        {labels.map(l => (
-                          <label key={l.cvat_label} style={{display:'flex',alignItems:'center',gap:3,fontSize:11,cursor:'pointer',padding:'3px 7px',borderRadius:4,background:cvatLabels.includes(l.cvat_label)?'#6c5ce7':'#1a1a2e',color:cvatLabels.includes(l.cvat_label)?'#fff':'#9898b0',border:'1px solid '+(cvatLabels.includes(l.cvat_label)?'#6c5ce7':'#2a2a3a'),transition:'all 0.15s'}}>
-                            <input type="checkbox" checked={cvatLabels.includes(l.cvat_label)} onChange={() => {
-                              setCvatLabels(prev => prev.includes(l.cvat_label) ? prev.filter(x=>x!==l.cvat_label) : [...prev, l.cvat_label]);
-                            }} style={{display:'none'}} />
-                            {l.cvat_label}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-              <div style={{display:'flex',gap:6,marginTop:8}}>
-                <input placeholder="Agregar etiquetas nuevas (separadas por coma)..." value={customLabel} onChange={e=>setCustomLabel(e.target.value)} style={{flex:1,padding:'4px 8px',borderRadius:4,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #2a2a3a',fontSize:12}} onKeyDown={e=>{if(e.key==='Enter'&&customLabel.trim()){e.preventDefault();const newLabels=customLabel.split(',').map(s=>s.trim()).filter(Boolean);setCvatLabels(prev=>[...new Set([...prev,...newLabels])]);setCustomLabel('');}}} />
-                <button className="btn-sm btn-secondary" type="button" onClick={()=>{if(customLabel.trim()){const newLabels=customLabel.split(',').map(s=>s.trim()).filter(Boolean);setCvatLabels(prev=>[...new Set([...prev,...newLabels])]);setCustomLabel('');}}}>+ Agregar</button>
+              <div style={{display:'flex',gap:6,marginBottom:8}}>
+                <select defaultValue="" onChange={e => { const g = labelGroups.find(x => String(x.id) === e.target.value); if (g) setCvatLabels([...g.labels]); e.target.value=''; }}
+                  style={{flex:1,padding:'6px 10px',borderRadius:6,background:'#1a1a2e',color:'#eaeaf2',border:'1px solid #6c5ce7',fontSize:13}}>
+                  <option value="">📁 Cargar etiquetas desde un proyecto...</option>
+                  {labelGroups.map(g => <option key={g.id} value={g.id}>{g.name} ({g.labels.length} etiquetas)</option>)}
+                </select>
+                <button type="button" className="btn-sm btn-secondary" disabled={cvatLabels.length===0} onClick={async () => {
+                  const name = window.prompt('Nombre del nuevo proyecto con estas ' + cvatLabels.length + ' etiquetas:');
+                  if (!name) return;
+                  const r = await api('/api/label-groups', { method: 'POST', body: JSON.stringify({ name, description: '', labels: cvatLabels }) });
+                  if (r && r.id) { setLabelGroups(prev => [...prev, r]); alert('Proyecto "' + r.name + '" guardado'); } else alert((r && r.detail) || 'Error');
+                }}>💾 Guardar como proyecto</button>
               </div>
-              {cvatLabels.length > 0 && <div style={{marginTop:6,fontSize:11,color:'#9898b0'}}>Seleccionadas ({cvatLabels.length}): {cvatLabels.join(', ')}</div>}
+              <LabelPicker available={availableLabels} selected={cvatLabels} onChange={setCvatLabels} />
               </div>
             </div>
             <div className="form-actions">
@@ -1948,6 +2131,7 @@ function App() {
       <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
       <Route path="/brands" element={<ProtectedRoute><BrandsPage /></ProtectedRoute>} />
       <Route path="/contexts" element={<ProtectedRoute><ContextsPage /></ProtectedRoute>} />
+      <Route path="/projects" element={<ProtectedRoute><ProjectsPage /></ProtectedRoute>} />
       <Route path="/videos" element={<ProtectedRoute><VideosPage /></ProtectedRoute>} />
       <Route path="/preprocess" element={<ProtectedRoute><PreprocessPage /></ProtectedRoute>} />
       <Route path="/datasets" element={<ProtectedRoute><DatasetsPage /></ProtectedRoute>} />
