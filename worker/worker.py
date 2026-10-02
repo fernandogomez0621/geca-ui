@@ -8,15 +8,23 @@ import torch
 
 app = FastAPI()
 
-# Set YOLO defaults
+# Configuracion de YOLO: todo lo que escribe va a carpetas con permiso de escritura.
+# /app es el codigo montado desde el servidor y el contenedor no puede escribir ahi.
 import os
-os.makedirs("/mnt/shared/runs", exist_ok=True)
-os.makedirs("/app/weights", exist_ok=True)
-os.makedirs("/tmp/Ultralytics", exist_ok=True)
-os.environ["YOLO_CONFIG_DIR"] = "/tmp/Ultralytics"
+for _d in ("/mnt/shared/runs", "/tmp/ultralytics_weights", "/tmp/Ultralytics"):
+    try:
+        os.makedirs(_d, exist_ok=True)
+    except Exception as _e:
+        print(f"Aviso: no se pudo crear {_d}: {_e}")
 try:
     from ultralytics import settings
-    settings.update({"runs_dir": "/mnt/shared/runs", "datasets_dir": "/mnt/shared/datasets"})
+    settings.update({"runs_dir": "/mnt/shared/runs", "datasets_dir": "/mnt/shared/datasets",
+                     "weights_dir": "/tmp/ultralytics_weights"})
+except Exception as _e:
+    print(f"Aviso: no se pudo configurar ultralytics: {_e}")
+# Cualquier archivo relativo que cree YOLO (ej. descargas) ira a /tmp, que siempre es escribible
+try:
+    os.chdir("/tmp")
 except Exception:
     pass
 SHARED = os.getenv("SHARED_DIR", "/mnt/shared")

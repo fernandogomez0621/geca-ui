@@ -103,7 +103,7 @@ services:
     working_dir: /app
     environment:
       SHARED_DIR: /mnt/shared
-    command: bash -c "pip install -q fastapi uvicorn ultralytics openpyxl matplotlib && python worker.py"
+    command: bash -c "pip install -q fastapi uvicorn ultralytics openpyxl matplotlib mlflow==2.18.0 && python /app/worker.py"
     deploy:
       resources:
         reservations:
