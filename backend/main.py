@@ -815,6 +815,7 @@ def get_video_detail(filename: str, user: User = Depends(get_current_user)):
 
 class ExtractRequest(BaseModel):
     interval: float = 10.0
+    replace: bool = False   # True = vaciar la carpeta antes de extraer (confirmado por el usuario)
 
 @app.post("/api/videos/{filename}/extract")
 def extract_frames(filename: str, data: ExtractRequest, user: User = Depends(get_current_user)):
@@ -830,6 +831,24 @@ def extract_frames(filename: str, data: ExtractRequest, user: User = Depends(get
     # Check if already running
     if filename in extraction_jobs and extraction_jobs[filename].get("status") == "running":
         return {"status": "already_running", "job": extraction_jobs[filename]}
+
+    # Si ya hay frames, pedir confirmacion para no mezclar extracciones distintas
+    existing = 0
+    if os.path.isdir(output_dir):
+        existing = len([f for f in os.listdir(output_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    if existing and not data.replace:
+        return {"status": "exists", "count": existing}
+    if existing and data.replace:
+        import shutil
+        for f in os.listdir(output_dir):
+            fp = os.path.join(output_dir, f)
+            try:
+                if os.path.isfile(fp) and f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    os.remove(fp)
+                elif os.path.isdir(fp) and f == "thumbs":
+                    shutil.rmtree(fp, ignore_errors=True)
+            except Exception as e:
+                print(f"Aviso: no se pudo borrar {fp}: {e}")
 
     # Estimate frames
     info = get_video_info(filepath)
@@ -964,88 +983,127 @@ class CreateCvatTaskRequest(BaseModel):
 
 @app.post("/api/frames/{folder}/create-cvat-task")
 async def create_cvat_task_from_frames(folder: str, data: CreateCvatTaskRequest, user: User = Depends(get_current_user)):
-    """Crea una tarea en CVAT y sube los frames directamente (servidor a servidor via ZIP)"""
+    """Crea una tarea en CVAT con los frames de una carpeta.
+
+    Modo 1 (preferido): almacenamiento compartido. CVAT lee los frames directamente de
+    /mnt/shared/frames (montado en CVAT como /home/django/share). No se sube nada y no hay
+    limite de tamano: necesario para videos 4K.
+    Modo 2 (respaldo): ZIP subido por HTTP. Solo para lotes pequenos, porque CVAT limita el
+    tamano de cada envio (error 413).
+    """
+    import asyncio
     frames_path = os.path.join(FRAMES_DIR, folder)
     if not os.path.isdir(frames_path):
         raise HTTPException(404, "Carpeta de frames no encontrada")
 
-    frame_files = sorted([f for f in os.listdir(frames_path) if f.lower().endswith(('.png', '.jpg', '.jpeg')) and f != 'thumbs'])
+    frame_files = sorted([f for f in os.listdir(frames_path)
+                          if f.lower().endswith(('.png', '.jpg', '.jpeg')) and os.path.isfile(os.path.join(frames_path, f))])
     if not frame_files:
         return {"status": "error", "message": "No hay frames en la carpeta"}
+    total_mb = sum(os.path.getsize(os.path.join(frames_path, f)) for f in frame_files) / 1_000_000
+    ZIP_LIMIT_MB = float(os.getenv("CVAT_ZIP_LIMIT_MB", "900"))
 
-    # Get CVAT config
     db = SessionLocal()
     cfg = get_cvat_config(db)
     db.close()
     if not cfg["cvat_url"] or not cfg["cvat_username"]:
         return {"status": "error", "message": "CVAT no configurado"}
 
-    try:
-        headers = {"Host": cfg["cvat_host"]} if cfg["cvat_host"] else {}
+    clean = []
+    for l in (data.labels or []):
+        for part in str(l).split(","):
+            s = part.strip()
+            if s and s not in clean:
+                clean.append(s)
+    data.labels = clean
+    labels_payload = [{"name": l, "attributes": []} for l in data.labels]
 
-        # 1. Login to CVAT
+    headers = {"Host": cfg["cvat_host"]} if cfg["cvat_host"] else {}
+    task_id = None
+    try:
         async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=headers) as client:
             resp = await client.post("/api/auth/login", json={
-                "username": cfg["cvat_username"],
-                "password": cfg["cvat_password"],
-            })
+                "username": cfg["cvat_username"], "password": cfg["cvat_password"]})
             if resp.status_code != 200:
                 return {"status": "error", "message": "No se pudo autenticar con CVAT"}
             token = resp.json().get("key")
-
-        # 2. Create task with labels
         auth_headers = {**headers, "Authorization": f"Token {token}"}
-        clean = []
-        for l in (data.labels or []):
-            for part in str(l).split(","):
-                s = part.strip()
-                if s and s not in clean:
-                    clean.append(s)
-        data.labels = clean
-        labels_payload = [{"name": l, "attributes": []} for l in data.labels] if data.labels else []
 
-        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=60, headers=auth_headers) as client:
-            resp = await client.post("/api/tasks", json={
-                "name": data.task_name,
-                "labels": labels_payload,
-            })
+        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=1800, headers=auth_headers) as client:
+            # 1. Comprobar si CVAT ve esta carpeta en su almacenamiento compartido
+            share_ok = False
+            try:
+                r = await client.get("/api/server/share", params={"directory": f"/{folder}/"})
+                if r.status_code == 200:
+                    items = r.json()
+                    items = items.get("results", items) if isinstance(items, dict) else items
+                    names = {i.get("name") for i in items if isinstance(i, dict)}
+                    share_ok = any(f in names for f in frame_files[:5])
+            except Exception:
+                share_ok = False
+
+            if not share_ok and total_mb > ZIP_LIMIT_MB:
+                return {"status": "error", "message": (
+                    f"Los {len(frame_files)} frames ocupan {total_mb/1000:.1f} GB y superan el limite de subida de CVAT. "
+                    "Active el almacenamiento compartido de CVAT (ver manual) para crear tareas de cualquier tamano.")}
+
+            # 2. Crear la tarea
+            resp = await client.post("/api/tasks", json={"name": data.task_name, "labels": labels_payload})
             if resp.status_code not in (200, 201):
                 return {"status": "error", "message": f"Error creando tarea: {resp.text[:200]}"}
             task_id = resp.json()["id"]
 
-        # 3. Create ZIP of all frames
-        import zipfile, io, tempfile
-        zip_path = os.path.join(tempfile.gettempdir(), f"cvat_upload_{folder}.zip")
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
-            for fname in frame_files:
-                fpath = os.path.join(frames_path, fname)
-                zf.write(fpath, fname)
-
-        # 4. Upload ZIP to CVAT (single request)
-        with open(zip_path, "rb") as zf:
-            zip_data = zf.read()
-
-        async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=600, headers=auth_headers) as client:
-            resp = await client.post(
-                f"/api/tasks/{task_id}/data",
-                data={"image_quality": 70},
-                files={"client_files[0]": (f"{folder}.zip", zip_data, "application/zip")},
-            )
+            # 3. Enviar los datos
+            if share_ok:
+                mode = "compartido"
+                resp = await client.post(f"/api/tasks/{task_id}/data", json={
+                    "server_files": [f"{folder}/{f}" for f in frame_files],
+                    "image_quality": 70, "copy_data": True, "sorting_method": "lexicographical"})
+            else:
+                mode = "zip"
+                import zipfile, tempfile
+                zip_path = os.path.join(tempfile.gettempdir(), f"cvat_upload_{folder}.zip")
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
+                    for fname in frame_files:
+                        zf.write(os.path.join(frames_path, fname), fname)
+                with open(zip_path, "rb") as zfh:
+                    zip_data = zfh.read()
+                os.remove(zip_path)
+                resp = await client.post(f"/api/tasks/{task_id}/data", data={"image_quality": 70},
+                                         files={"client_files[0]": (f"{folder}.zip", zip_data, "application/zip")})
             if resp.status_code not in (200, 201, 202):
-                return {"status": "error", "message": f"Error subiendo frames: {resp.status_code} {resp.text[:200]}"}
+                raise RuntimeError(f"CVAT respondio {resp.status_code}: {resp.text[:200]}")
 
-        # 5. Cleanup
-        os.remove(zip_path)
+            # 4. Esperar a que CVAT termine de procesar los datos
+            rq_id = None
+            try:
+                rq_id = resp.json().get("rq_id")
+            except Exception:
+                pass
+            if rq_id:
+                for _ in range(900):  # hasta ~30 min
+                    await asyncio.sleep(2)
+                    rs = await client.get(f"/api/requests/{rq_id}")
+                    if rs.status_code != 200:
+                        break
+                    st = rs.json().get("status")
+                    if st == "finished":
+                        break
+                    if st == "failed":
+                        raise RuntimeError(rs.json().get("message") or "CVAT no pudo procesar los frames")
 
-        return {
-            "status": "ok",
-            "task_id": task_id,
-            "task_name": data.task_name,
-            "frames_uploaded": len(frame_files),
-            "labels": data.labels,
-        }
+        return {"status": "ok", "task_id": task_id, "task_name": data.task_name,
+                "frames_uploaded": len(frame_files), "labels": data.labels, "mode": mode,
+                "size_gb": round(total_mb / 1000, 2)}
 
     except Exception as e:
+        # No dejar tareas vacias en CVAT si algo fallo
+        if task_id:
+            try:
+                async with httpx.AsyncClient(base_url=cfg["cvat_url"], timeout=30, headers=auth_headers) as client:
+                    await client.delete(f"/api/tasks/{task_id}")
+            except Exception:
+                pass
         return {"status": "error", "message": str(e)}
 
 
@@ -1591,9 +1649,23 @@ async def import_cvat_dataset(task_id: int, user: User = Depends(get_current_use
 
         # 4. Save and extract
         import zipfile, io, shutil
-        source_dir = os.path.join(DATASETS_DIR, "sources", task_name)
+        # Nombre unico por tarea: nombre + numero de tarea CVAT.
+        # Reimportar la MISMA tarea reemplaza su propia fuente (ej. tras etiquetar mas);
+        # dos tareas distintas con el mismo nombre ya no se pisan.
+        source_name = f"{task_name}_t{task_id}"
+        source_dir = os.path.join(DATASETS_DIR, "sources", source_name)
         if os.path.exists(source_dir):
             shutil.rmtree(source_dir)
+        # Fuente antigua (sin sufijo) importada desde ESTA misma tarea: se reemplaza para no duplicar
+        legacy_dir = os.path.join(DATASETS_DIR, "sources", task_name)
+        if os.path.isdir(legacy_dir):
+            try:
+                import json as _jl
+                with open(os.path.join(legacy_dir, "meta.json")) as _f:
+                    if int(_jl.load(_f).get("task_id", -1)) == int(task_id):
+                        shutil.rmtree(legacy_dir, ignore_errors=True)
+            except Exception:
+                pass  # sin meta.json o de otra tarea: no se toca
         os.makedirs(source_dir, exist_ok=True)
 
         # Save ZIP
@@ -1653,6 +1725,7 @@ async def import_cvat_dataset(task_id: int, user: User = Depends(get_current_use
         meta = {
             "task_id": task_id,
             "task_name": task_info["name"],
+            "source_name": source_name,
             "class_names": class_names,
             "num_images": len([f for f in os.listdir(img_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]),
             "num_labels": len([f for f in os.listdir(lbl_dir) if f.endswith('.txt')]),

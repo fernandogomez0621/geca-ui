@@ -1,0 +1,17 @@
+# Almacenamiento compartido para CVAT.
+# Permite que GECA cree tareas leyendo los frames directamente de la carpeta compartida,
+# sin subirlos por HTTP (evita el error 413 con videos 4K).
+# Se monta en solo lectura: CVAT no puede modificar ni borrar los frames.
+# Copiar a ~/cvat/ y levantar CVAT incluyendo este archivo con -f.
+
+x-geca-share: &geca-share
+  volumes:
+    - /home/aristoteles/compartida/frames:/home/django/share:ro
+
+services:
+  cvat_server: *geca-share
+  cvat_worker_import: *geca-share
+  cvat_worker_export: *geca-share
+  cvat_worker_annotation: *geca-share
+  cvat_worker_chunks: *geca-share
+  cvat_worker_utils: *geca-share

@@ -1147,7 +1147,7 @@ function DatasetsPage() {
     const r = await api(`/api/datasets/import-cvat/${taskId}`, { method: 'POST' });
     setImporting(null);
     if (r?.status === 'ok') {
-      alert(`✓ Importado: ${r.num_images} imágenes, ${r.class_names?.length || 0} clases`);
+      alert(`✓ Importado como "${r.source_name || r.task_name}": ${r.num_images} imágenes, ${r.class_names?.length || 0} clases`);
       load();
     } else {
       alert(`✕ Error: ${r?.message || 'Fallo al importar'}`);
@@ -1631,11 +1631,20 @@ function VideosPage() {
     return Math.floor(v.duration_secs / interval) + 1;
   };
 
-  const startExtraction = async (v) => {
+  const startExtraction = async (v, replace = false) => {
     setExtractStatus({ status: 'starting' });
     const res = await api(`/api/videos/${encodeURIComponent(v.name)}/extract`, {
-      method: 'POST', body: JSON.stringify({ interval: interval })
+      method: 'POST', body: JSON.stringify({ interval: interval, replace })
     });
+    if (res?.status === 'exists') {
+      const ok = window.confirm(
+        `Este video ya tiene ${res.count} frames extraídos.\n\n` +
+        `Si continúa, se BORRARÁN y se extraerán de nuevo cada ${interval} s.\n\n` +
+        `Las tareas ya creadas en CVAT y su trabajo de etiquetado NO se ven afectados.\n\n¿Desea continuar?`);
+      if (ok) return startExtraction(v, true);
+      setExtractStatus(null);
+      return;
+    }
     if (res?.status === 'started' || res?.status === 'already_running') pollStatus(v.name);
   };
 
@@ -1687,7 +1696,7 @@ function VideosPage() {
     });
     setCvatCreating(false);
     if (res?.status === 'ok') {
-      alert(`✓ Tarea "${res.task_name}" creada en CVAT con ${res.frames_uploaded} frames`);
+      alert(`✓ Tarea "${res.task_name}" creada en CVAT con ${res.frames_uploaded} frames` + (res.mode === "compartido" ? ` (${res.size_gb} GB, leídos desde la carpeta compartida)` : ""));
       setShowCvatForm(false); setCvatTaskName('');
     } else {
       alert(`✕ Error: ${res?.message || 'No se pudo crear'}`);
