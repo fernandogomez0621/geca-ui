@@ -103,7 +103,7 @@ services:
     working_dir: /app
     environment:
       SHARED_DIR: /mnt/shared
-    command: bash -c "pip install -q fastapi uvicorn ultralytics openpyxl matplotlib mlflow==2.18.0 && python /app/worker.py"
+    command: bash -c "pip install -q fastapi uvicorn ultralytics openpyxl matplotlib mlflow==2.18.0 'sqlalchemy>=2.0,<2.1' && python /app/worker.py"
     deploy:
       resources:
         reservations:
@@ -120,7 +120,7 @@ services:
       - "5000:5000"
     volumes:
       - /mnt/shared/mlflow:/mlflow
-    entrypoint: ["sh", "-c", "pip install mlflow==2.18.0 && mkdir -p /mlflow/artifacts && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root mlflow-artifacts:/artifacts --artifacts-destination /mlflow/artifacts --gunicorn-opts '--timeout 120 --workers 1'"]
+    entrypoint: ["sh", "-c", "pip install mlflow==2.18.0 'sqlalchemy>=2.0,<2.1' && mkdir -p /mlflow/artifacts && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root mlflow-artifacts:/artifacts --artifacts-destination /mlflow/artifacts --gunicorn-opts '--timeout 120 --workers 1'"]
     restart: unless-stopped
 
 volumes:
